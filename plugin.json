@@ -1,0 +1,8 @@
+{
+    "name": "My Support Improver",
+    "author": "Emanuel Lönnberg",
+    "version": "0.1",
+    "description": "Create a volume where support settings can be changed to affect support generation.",
+    "api": 8,
+    "i18n-catalog": "cura"
+}
