@@ -39,16 +39,6 @@ class MySupportImprover(Tool):
         self._shortcut_key = Qt.Key.Key_E
         self._controller = self.getController()
         
-        # Initialize properties dictionary
-        self._properties = {
-            "CubeX": 3.0,
-            "CubeY": 3.0,
-            "CubeZ": 3.0,
-            "CanModify": True,
-            "ShowSettings": False,
-            "UsePresets": False
-        }
-        
         # Initialize properties with default values
         self._cube_x = 3.0
         self._cube_y = 3.0
@@ -56,7 +46,6 @@ class MySupportImprover(Tool):
         self._can_modify = True
         self._show_settings = False
         self._use_presets = False
-        self._is_capsule = False
         
         
         self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify")
@@ -88,9 +77,7 @@ class MySupportImprover(Tool):
     def setCubeX(self, value: float) -> None:
         if value != self._cube_x:
             self._cube_x = float(value)
-            self._properties["CubeX"] = float(value)
             Logger.log("d", "CubeX changed to %s", str(self._cube_x))
-            #self.propertyChangedSignal.emit()
 
     def getCubeY(self) -> float:
         return self._cube_y
@@ -98,9 +85,7 @@ class MySupportImprover(Tool):
     def setCubeY(self, value: float) -> None:
         if value != self._cube_y:
             self._cube_y = float(value)
-            self._properties["CubeY"] = float(value)
             Logger.log("d", "CubeY changed to %s", str(self._cube_y))
-            #self.propertyChangedSignal.emit()
 
     def getCubeZ(self) -> float:
         return self._cube_z
@@ -108,9 +93,7 @@ class MySupportImprover(Tool):
     def setCubeZ(self, value: float) -> None:
         if value != self._cube_z:
             self._cube_z = float(value)
-            self._properties["CubeZ"] = float(value)
             Logger.log("d", "CubeZ changed to %s", str(self._cube_z))
-            #self.propertyChangedSignal.emit()
 
     def getCanModify(self) -> bool:
         return self._can_modify
@@ -118,8 +101,6 @@ class MySupportImprover(Tool):
     def setCanModify(self, value: bool) -> None:
         if value != self._can_modify:
             self._can_modify = bool(value)
-            self._properties["CanModify"] = bool(value)
-            #self.propertyChangedSignal.emit()
 
     def getShowSettings(self) -> bool:
         return self._show_settings
@@ -127,8 +108,6 @@ class MySupportImprover(Tool):
     def setShowSettings(self, value: bool) -> None:
         if value != self._show_settings:
             self._show_settings = bool(value)
-            self._properties["ShowSettings"] = bool(value)
-            #self.propertyChangedSignal.emit()
 
     def getUsePresets(self) -> bool:
         return self._use_presets
@@ -136,22 +115,7 @@ class MySupportImprover(Tool):
     def setUsePresets(self, value: bool) -> None:
         if value != self._use_presets:
             self._use_presets = bool(value)
-            self._properties["UsePresets"] = bool(value)
-            #self.propertyChangedSignal.emit()
 
-    # Define the properties for QML
-    #cubeX = pyqtProperty(float, fget=getCubeX, fset=setCubeX, notify=propertyChangedSignal)
-    #cubeY = pyqtProperty(float, fget=getCubeY, fset=setCubeY, notify=propertyChangedSignal)
-    #cubeZ = pyqtProperty(float, fget=getCubeZ, fset=setCubeZ, notify=propertyChangedSignal)
-    #canModify = pyqtProperty(bool, fget=getCanModify, fset=setCanModify, notify=propertyChangedSignal)
-    #showSettings = pyqtProperty(bool, fget=getShowSettings, fset=setShowSettings, notify=propertyChangedSignal)
-    #usePresets = pyqtProperty(bool, fget=getUsePresets, fset=setUsePresets, notify=propertyChangedSignal)
-    #isCapsule = pyqtProperty(bool, fget=getIsCapsule, fset=setIsCapsule, notify=propertyChangedSignal)
-
-    @pyqtSlot()
-    def addModifier(self) -> None:
-        Logger.log("d", "addModifier called")
-        # Implementation here...
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -159,40 +123,6 @@ class MySupportImprover(Tool):
         Logger.log("d", f"QML path: {qml_path}")
         return qml_path
 
-    def setProperty(self, property_name, property_value):
-        """Set a property value and emit a signal if changed."""
-        Logger.log("d", "setProperty called with property_name=%s, value=%s", property_name, str(property_value))
-        
-        if property_name not in self._properties:
-            Logger.log("w", "Tried to set non-existent property %s", property_name)
-            return
-
-        # Convert string values to appropriate types
-        if isinstance(self._properties[property_name], bool):
-            if isinstance(property_value, str):
-                property_value = property_value.lower() == "true"
-            else:
-                property_value = bool(property_value)
-        elif isinstance(self._properties[property_name], float):
-            try:
-                property_value = float(property_value)
-            except (ValueError, TypeError):
-                Logger.log("w", "Invalid value %s for property %s", str(property_value), property_name)
-                return
-
-        old_value = self._properties[property_name]
-        if old_value != property_value:
-            self._properties[property_name] = property_value
-            Logger.log("i", "Property %s changed from %s to %s", property_name, str(old_value), str(property_value))
-            #self.propertyChangedSignal.emit()
-        else:
-            Logger.log("d", "Property %s unchanged (value=%s)", property_name, str(property_value))
-
-    def getProperty(self, property_name, default_value=None):
-        """Get a property value with an optional default."""
-        value = self._properties.get(property_name, default_value)
-        Logger.log("d", "getProperty called: %s = %s", property_name, str(value))
-        return value
 
     def triggerAction(self, action_name, *args):
         """Handle actions triggered from the QML interface."""
@@ -356,9 +286,9 @@ class MySupportImprover(Tool):
             node.setCalculateBoundingBox(True)
 
             # Get cube dimensions from properties
-            cube_x = float(self.getProperty("CubeX", 3.0))
-            cube_y = float(self.getProperty("CubeY", 3.0))
-            cube_z = float(self.getProperty("CubeZ", 3.0))
+            cube_x = self._cube_x
+            cube_y = self._cube_y
+            cube_z = self._cube_z
             
             Logger.log("d", f"Creating cube with dimensions: X={cube_x}, Y={cube_y}, Z={cube_z}")
             
