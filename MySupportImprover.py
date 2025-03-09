@@ -1,6 +1,6 @@
 # Cura is released under the terms of the LGPLv3 or higher.
 
-from PyQt6.QtCore import Qt, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication
 
 from UM.Logger import Logger
@@ -27,11 +27,8 @@ from cura.Scene.BuildPlateDecorator import BuildPlateDecorator
 from UM.Settings.SettingInstance import SettingInstance
 
 import numpy
-import os
-import json
 
 class MySupportImprover(Tool):
-
     def __init__(self):
         super().__init__()
         self._shortcut_key = Qt.Key.Key_E
@@ -182,6 +179,7 @@ class MySupportImprover(Tool):
 
             # Add the anti_overhang_mesh cube at the picked location
             self._createModifierVolume(picked_node, picked_position)
+
 
     def setMeshType(self, node: CuraSceneNode, mesh_type: str) -> bool:
         """Set the mesh type for a specific node.
@@ -520,8 +518,13 @@ class MySupportImprover(Tool):
         if global_container_stack:
             plugin_enabled = global_container_stack.getProperty("anti_overhang_mesh", "enabled")
 
+        # NOTE!!!
+        # BE carefull messing things up here as it will give "imposible to slice due to settting" error
+
         # Set both the tool enabled state and the CanModify property
-        self.setProperty("CanModify", plugin_enabled)
+        #self.setProperty("CanModify", plugin_enabled)
+        self.setCanModify = plugin_enabled
+        
         CuraApplication.getInstance().getController().toolEnabledChanged.emit(self._plugin_id, plugin_enabled)
 
     def _onSelectionChanged(self):
@@ -596,9 +599,9 @@ class MySupportImprover(Tool):
         """Apply a preset to the cube dimensions."""
         if preset_name in self._presets:
             preset = self._presets[preset_name]
-            self.setProperty("CubeX", preset["x"])
-            self.setProperty("CubeY", preset["y"])
-            self.setProperty("CubeZ", preset["z"])
+            self._cube_x = preset["x"]
+            self._cube_y = preset["y"]          
+            self._cube_z = preset["z"]
             Logger.log("i", f"Applied preset: {preset_name}")
         else:
             Logger.log("w", f"Preset not found: {preset_name}")
