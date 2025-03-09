@@ -229,6 +229,60 @@ Item {
                     }
                 }
             }
+
+            // Support Angle controls
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Support Angle")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                width: Math.ceil(contentWidth)
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+                
+                Slider {
+                    id: angleSlider
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.0
+                    to: 90.0
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportAngle") : 45.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("SupportAngle", value)
+                            angleInput.text = value.toFixed(1)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    id: angleInput
+                    width: 70
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "°"
+                    text: angleSlider.value.toFixed(1)
+                    validator: DoubleValidator {
+                        decimals: 1
+                        bottom: 0.0
+                        top: 90.0
+                        locale: "en_US"
+                    }
+                    onEditingFinished: {
+                        if (UM.ActiveTool) {
+                            var modified_text = text.replace(",", ".")
+                            var value = parseFloat(modified_text)
+                            if (!isNaN(value)) {
+                                UM.ActiveTool.setProperty("SupportAngle", value)
+                                angleSlider.value = value
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

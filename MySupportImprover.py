@@ -50,9 +50,9 @@ class MySupportImprover(Tool):
         self._can_modify = True
         self._show_settings = False
         self._use_presets = False
+        self._support_angle = 45.0  # Default support angle
         
-        
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets")
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -124,6 +124,16 @@ class MySupportImprover(Tool):
         return self._presets
 
     Presets = pyqtProperty("QVariantMap", fget=getPresets)
+
+    def getSupportAngle(self) -> float:
+        return self._support_angle
+
+    def setSupportAngle(self, value: float) -> None:
+        if value != self._support_angle:
+            self._support_angle = float(value)
+            Logger.log("d", "Support angle changed to %s", str(self._support_angle))
+
+    SupportAngle = pyqtProperty(float, fget=getSupportAngle, fset=setSupportAngle)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -337,7 +347,7 @@ class MySupportImprover(Tool):
             "support_top_distance": None,
             "support_xy_distance": None,
             "support_bottom_distance": None,
-            "support_angle": "=45"  
+            "support_angle": None  # TODO: Why does it not work to set the angle here?
             }
             
             for property_key in settingsList:
@@ -350,8 +360,8 @@ class MySupportImprover(Tool):
                     new_instance.resetState()  # Ensure that the state is not seen as a user state.
                     settings.addInstance(new_instance)
        
-            stack.setProperty("support_angle", "value", 52.0)
-            Logger.log("d", "Set support_angle to 52.0 via stack.setProperty.")
+            stack.setProperty("support_angle", "value", float(self._support_angle))
+            Logger.log("d", "Set support_angle to " + str(self._support_angle) + " via stack.setProperty.")
             Logger.log("d", f"Now top property says: {stack.getProperty('support_angle', 'value')}")
             op = GroupedOperation()
             op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
