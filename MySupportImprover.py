@@ -1,8 +1,10 @@
 # Cura is released under the terms of the LGPLv3 or higher.
-
+import os
+import sys
+import json
 from PyQt6.QtCore import Qt, QTimer, pyqtProperty
 from PyQt6.QtWidgets import QApplication
-
+from UM.Resources import Resources
 from UM.Logger import Logger
 from UM.Application import Application
 from UM.Math.Vector import Vector
@@ -27,6 +29,13 @@ from cura.Scene.BuildPlateDecorator import BuildPlateDecorator
 from UM.Settings.SettingInstance import SettingInstance
 
 import numpy
+
+# Suggested solution from fieldOfView . in this discussion solved in Cura 4.9
+# https://github.com/5axes/Calibration-Shapes/issues/1
+# Cura are able to find the scripts from inside the plugin folder if the scripts are into a folder named resources
+#Resources.addSearchPath(
+#    os.path.join(os.path.abspath(os.path.dirname(__file__)),'resources')
+#)  # Plugin translation file import
 
 class MySupportImprover(Tool):
     def __init__(self):
