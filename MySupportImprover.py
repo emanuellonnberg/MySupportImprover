@@ -31,8 +31,6 @@ import os
 import json
 
 class MySupportImprover(Tool):
-    # Define signals
-    #propertyChangedSignal = pyqtSignal()
 
     def __init__(self):
         super().__init__()

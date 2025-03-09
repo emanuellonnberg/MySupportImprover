@@ -50,31 +50,50 @@ Item {
             width: Math.ceil(contentWidth)
         }
 
-        UM.TextFieldWithUnit {
-            id: xInput
-            width: 70
-            height: UM.Theme.getSize("setting_control").height
-            unit: "mm"
-            text: UM.ActiveTool.properties.getValue("CubeX")
-            validator: DoubleValidator {
-                decimals: 1
-                bottom: 1.0
-                top: 100.0
-                locale: "en_US"
-            }
-            onEditingFinished: {
-                if (UM.ActiveTool) {
-                    console.log("Setting CubeX value to:", text)
-                    var modified_text = text.replace(",", ".")
-                    var value = parseFloat(modified_text)
-                    if (!isNaN(value)) {
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+            
+            Slider {
+                id: xSlider
+                width: 120
+                height: UM.Theme.getSize("setting_control").height
+                from: 1.0
+                to: 100.0
+                value: UM.ActiveTool.properties.getValue("CubeX")
+                onValueChanged: {
+                    if (UM.ActiveTool) {
                         UM.ActiveTool.setProperty("CubeX", value)
-                        base.currentX = value
+                        xInput.text = value.toFixed(1)
+                    }
+                }
+            }
+
+            UM.TextFieldWithUnit {
+                id: xInput
+                width: 70
+                height: UM.Theme.getSize("setting_control").height
+                unit: "mm"
+                text: xSlider.value.toFixed(1)
+                validator: DoubleValidator {
+                    decimals: 1
+                    bottom: 1.0
+                    top: 100.0
+                    locale: "en_US"
+                }
+                onEditingFinished: {
+                    if (UM.ActiveTool) {
+                        var modified_text = text.replace(",", ".")
+                        var value = parseFloat(modified_text)
+                        if (!isNaN(value)) {
+                            UM.ActiveTool.setProperty("CubeX", value)
+                            xSlider.value = value
+                        }
                     }
                 }
             }
         }
 
+        // Y dimension controls
         Label {
             height: UM.Theme.getSize("setting_control").height
             text: catalog.i18nc("@label", "Depth (Y)")
@@ -85,31 +104,50 @@ Item {
             width: Math.ceil(contentWidth)
         }
 
-        UM.TextFieldWithUnit {
-            id: yInput
-            width: 70
-            height: UM.Theme.getSize("setting_control").height
-            unit: "mm"
-            text: UM.ActiveTool.properties.getValue("CubeY")
-            validator: DoubleValidator {
-                decimals: 1
-                bottom: 1.0
-                top: 100.0
-                locale: "en_US"
-            }
-            onEditingFinished: {
-                if (UM.ActiveTool) {
-                    console.log("Setting CubeY value to:", text)
-                    var modified_text = text.replace(",", ".")
-                    var value = parseFloat(modified_text)
-                    if (!isNaN(value)) {
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+            
+            Slider {
+                id: ySlider
+                width: 120
+                height: UM.Theme.getSize("setting_control").height
+                from: 1.0
+                to: 100.0
+                value: UM.ActiveTool.properties.getValue("CubeY")
+                onValueChanged: {
+                    if (UM.ActiveTool) {
                         UM.ActiveTool.setProperty("CubeY", value)
-                        base.currentY = value
+                        yInput.text = value.toFixed(1)
+                    }
+                }
+            }
+
+            UM.TextFieldWithUnit {
+                id: yInput
+                width: 70
+                height: UM.Theme.getSize("setting_control").height
+                unit: "mm"
+                text: ySlider.value.toFixed(1)
+                validator: DoubleValidator {
+                    decimals: 1
+                    bottom: 1.0
+                    top: 100.0
+                    locale: "en_US"
+                }
+                onEditingFinished: {
+                    if (UM.ActiveTool) {
+                        var modified_text = text.replace(",", ".")
+                        var value = parseFloat(modified_text)
+                        if (!isNaN(value)) {
+                            UM.ActiveTool.setProperty("CubeY", value)
+                            ySlider.value = value
+                        }
                     }
                 }
             }
         }
 
+        // Z dimension controls
         Label {
             height: UM.Theme.getSize("setting_control").height
             text: catalog.i18nc("@label", "Height (Z)")
@@ -120,31 +158,48 @@ Item {
             width: Math.ceil(contentWidth)
         }
 
-        UM.TextFieldWithUnit {
-            id: zInput
-            width: 70
-            height: UM.Theme.getSize("setting_control").height
-            unit: "mm"
-            text: UM.ActiveTool.properties.getValue("CubeZ")
-            validator: DoubleValidator {
-                decimals: 1
-                bottom: 1.0
-                top: 100.0
-                locale: "en_US"
-            }
-            onEditingFinished: {
-                if (UM.ActiveTool) {
-                    console.log("Setting CubeZ value to:", text)
-                    var modified_text = text.replace(",", ".")
-                    var value = parseFloat(modified_text)
-                    if (!isNaN(value)) {
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+            
+            Slider {
+                id: zSlider
+                width: 120
+                height: UM.Theme.getSize("setting_control").height
+                from: 1.0
+                to: 100.0
+                value: UM.ActiveTool.properties.getValue("CubeZ")
+                onValueChanged: {
+                    if (UM.ActiveTool) {
                         UM.ActiveTool.setProperty("CubeZ", value)
-                        base.currentZ = value
+                        zInput.text = value.toFixed(1)
+                    }
+                }
+            }
+
+            UM.TextFieldWithUnit {
+                id: zInput
+                width: 70
+                height: UM.Theme.getSize("setting_control").height
+                unit: "mm"
+                text: zSlider.value.toFixed(1)
+                validator: DoubleValidator {
+                    decimals: 1
+                    bottom: 1.0
+                    top: 100.0
+                    locale: "en_US"
+                }
+                onEditingFinished: {
+                    if (UM.ActiveTool) {
+                        var modified_text = text.replace(",", ".")
+                        var value = parseFloat(modified_text)
+                        if (!isNaN(value)) {
+                            UM.ActiveTool.setProperty("CubeZ", value)
+                            zSlider.value = value
+                        }
                     }
                 }
             }
         }
-
     }
 
     Connections {
@@ -164,4 +219,4 @@ Item {
             }
         }
     }
-} 
+}
