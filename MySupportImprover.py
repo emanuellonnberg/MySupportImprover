@@ -330,72 +330,8 @@ class MySupportImprover(Tool):
             
             settings = stack.getTop()
             
-            #modifier_definition = stack.getSettingDefinition("mesh_type")
-            #modifier_instance = SettingInstance(modifier_definition, settings)
-            #modifier_instance.setProperty("value", "cutting_mesh")  # This sets the mesh type to a modifier mesh
-            #modifier_instance.resetState()  # Ensure that the state is not seen as a user state.
-            #settings.addInstance(modifier_instance)
-
-            # Example: Modify the infill density setting
-            #infill_definition = stack.getSettingDefinition("infill_sparse_density")
-            #infill_instance = SettingInstance(infill_definition, settings)
-            #infill_instance.setProperty("value", 20)  # Set infill density to 20%
-            #infill_instance.resetState()  # Ensure that the state is not seen as a user state.
-            #settings.addInstance(infill_instance)
-
-
             Logger.log("i", "Modifier mesh type set successfully.")
 
-            # Now set the specific setting you want to modify within this mesh
-            #angle_definition = stack.getSettingDefinition("support_angle")
-
-            #Log the properties of the angle_definition to understand what it requires
-            # Print out all attributes of angle_definition
-            #Logger.log("d", f"Attributes of angle_definition: {dir(angle_definition)}")
-            
-            #angle_instance = settings.getInstance("support_angle")
-            #if not angle_instance:
-            #    angle_instance = SettingInstance(angle_definition, settings)
-            #   settings.addInstance(angle_instance)
-
-            # Log the current values of all properties of the SettingInstance
-            #property_names = angle_instance.getPropertyNames()
-            #Logger.log("d", f"Supported property names for 'support_angle' angle_instance: {property_names}")
-            #for prop in property_names:
-            #    try:
-            #        prop_value = angle_instance.getProperty(prop)
-            #        Logger.log("d", f"Property '{prop}' - Current Value: {prop_value}")
-            #    except Exception as e:
-            #        Logger.log("e", f"Failed to get value for property '{prop}': {e}")
-                    
-                
-            # Log all property names supported by this setting definition
-            #property_names = angle_definition.getPropertyNames()
-            #Logger.log("d", f"Supported property names for 'support_angle': {property_names}")
-            
-            #for prop in property_names:
-            #    prop_type = angle_definition.getPropertyType(prop)
-            #    is_read_only = angle_definition.isReadOnlyProperty(prop)
-            #    prop_value = angle_definition.getProperty(prop)
-            #    Logger.log("d", f"Property '{prop}' - Type: {prop_type}, Read-Only: {is_read_only}, value {prop_value} ")
-                        
-   
-            # Remove existing 'support_angle' setting instances if necessary
-            #if settings.getInstance("support_angle"):
-            #    settings.removeInstance("support_angle")
-
-            # Create a new setting instance for 'support_angle'
-            #angle_definition = stack.getSettingDefinition("support_angle")
-            #if not angle_definition:
-            #    Logger.log("e", "Could not retrieve the definition for 'support_angle'.")
-            #    return
-
-            #angle_instance = SettingInstance(angle_definition, settings)
-            #angle_instance.setProperty("value", "45.0")  # Set the desired support angle value
-            #angle_instance.resetState()  # Ensure the state is not seen as a user override
-            #settings.addInstance(angle_instance)
-            
-            
             settingsList = {
             "support_z_distance": None,
             "support_top_distance": None,
@@ -437,7 +373,6 @@ class MySupportImprover(Tool):
                 Logger.log("e", "Validator object not found for 'support_angle'.")
             #if validator_type:
 
-
             # Assuming you found a validator, validate the desired value before setting it
             
             angle_instance = settings.getInstance("support_angle")
@@ -459,31 +394,6 @@ class MySupportImprover(Tool):
                 Logger.log("i", "Support angle 'value' set to 45 successfully.")
             except Exception as e:
                 Logger.log("e", f"Failed to set support angle 'value': {e}")
-
-            # Re-check the property value after setting
-            #current_value = stack.getProperty("support_angle", "value")
-            #Logger.log("d", f"Current 'support_angle' value after setting: {current_value}")           
-                          
-            #min_value = stack.getProperty("support_angle", "minimum_value")
-            #max_value = stack.getProperty("support_angle", "maximum_value")
-            #Logger.log("d", f"Support angle constraints - Min: {min_value}, Max: {max_value}")
-            
-            # Log any dependencies or overrides for 'support_angle'
-            #dependencies = stack.getProperty("support_angle", "depends_on_property")
-            #overrides = stack.getProperty("support_angle", "overrides")
-            #type = stack.getProperty("support_angle", "type")
-            #setableMesh = stack.getProperty("support_angle", "settable_per_mesh")
-            #settablePerMeshgroup = stack.getProperty("support_angle", "settable_per_meshgroup")
-            #resolve = stack.getProperty("support_angle", "resolve")
-            #Logger.log("d", f"'support_angle' settablePerMeshgroup: {settablePerMeshgroup}")
-            #Logger.log("d", f"'support_angle' setableMesh: {setableMesh}")
-            #Logger.log("d", f"'support_angle' dependencies: {dependencies}")
-            #Logger.log("d", f"'support_angle' overrides: {overrides}")
-            #Logger.log("d", f"'support_angle' type: {type}")
-            #Logger.log("d", f"'support_angle' resolve: {resolve}")
-            #self.visibility_handler.forceVisibilityChanged()
-            
-            #CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node)
 
             # Re-check the property value after forcing an update
             current_value = stack.getProperty("support_angle", "value")
