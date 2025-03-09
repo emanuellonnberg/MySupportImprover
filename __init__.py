@@ -11,7 +11,7 @@ def getMetaData():
         "tool": {
             "name": i18n_catalog.i18nc("@label", "My Support Improver"),
             "description": i18n_catalog.i18nc("@info:tooltip", "Create a volume where support settings can be changed to affect support generation."),
-            "icon": "SupportBlocker",
+            "icon": "down.svg",
             "tool_panel": "qt6/SupportImprover.qml",
             "weight": 4,
             "button_style": "tool_button",
