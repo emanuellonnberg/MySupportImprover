@@ -419,19 +419,18 @@ class MySupportImprover(Tool):
 
     def _createCube(self, size_x, size_y, size_z):
         mesh = MeshBuilder()
-
-        # Can't use MeshBuilder.addCube() because that does not get per-vertex normals
-        # Per-vertex normals require duplication of vertices
         s_x = size_x / 2
-        s_y = size_y / 2
+        s_y = size_y / 2  
         s_z = size_z / 2
-        verts = [ # 6 faces with 4 corners each
-            [-s_x, -s_y,  s_z], [-s_x,  s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x, -s_y,  s_z],
-            [-s_x,  s_y, -s_z], [-s_x, -s_y, -s_z], [ s_x, -s_y, -s_z], [ s_x,  s_y, -s_z],
-            [ s_x, -s_y, -s_z], [-s_x, -s_y, -s_z], [-s_x, -s_y,  s_z], [ s_x, -s_y,  s_z],
-            [-s_x,  s_y, -s_z], [ s_x,  s_y, -s_z], [ s_x,  s_y,  s_z], [-s_x,  s_y,  s_z],
-            [-s_x, -s_y,  s_z], [-s_x, -s_y, -s_z], [-s_x,  s_y, -s_z], [-s_x,  s_y,  s_z],
-            [ s_x, -s_y, -s_z], [ s_x, -s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x,  s_y, -s_z]
+
+        # Switched Y and Z coordinates order to fix dimensions
+        verts = [ # 6 faces with 4 corners each:  [x, z, y] format
+            [-s_x,  s_z, -s_y], [-s_x,  s_z,  s_y], [ s_x,  s_z,  s_y], [ s_x,  s_z, -s_y],  # top
+            [-s_x, -s_z, -s_y], [-s_x, -s_z,  s_y], [ s_x, -s_z,  s_y], [ s_x, -s_z, -s_y],  # bottom
+            [-s_x, -s_z, -s_y], [-s_x,  s_z, -s_y], [ s_x,  s_z, -s_y], [ s_x, -s_z, -s_y],  # back
+            [-s_x, -s_z,  s_y], [-s_x,  s_z,  s_y], [ s_x,  s_z,  s_y], [ s_x, -s_z,  s_y],  # front
+            [-s_x, -s_z, -s_y], [-s_x, -s_z,  s_y], [-s_x,  s_z,  s_y], [-s_x,  s_z, -s_y],  # left
+            [ s_x, -s_z, -s_y], [ s_x, -s_z,  s_y], [ s_x,  s_z,  s_y], [ s_x,  s_z, -s_y]   # right
         ]
         mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
 
