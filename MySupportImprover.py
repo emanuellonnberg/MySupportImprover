@@ -1,6 +1,6 @@
 # Cura is released under the terms of the LGPLv3 or higher.
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
 from UM.Logger import Logger
@@ -27,20 +27,51 @@ from cura.Scene.BuildPlateDecorator import BuildPlateDecorator
 from UM.Settings.SettingInstance import SettingInstance
 
 import numpy
+import os
+import json
 
-class SupportImprover(Tool):
+class MySupportImprover(Tool):
+    # Define signals
+    #propertyChangedSignal = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self._shortcut_key = Qt.Key.Key_E
         self._controller = self.getController()
+        
+        # Initialize properties dictionary
+        self._properties = {
+            "CubeX": 3.0,
+            "CubeY": 3.0,
+            "CubeZ": 3.0,
+            "CanModify": True,
+            "ShowSettings": False,
+            "UsePresets": False
+        }
+        
+        # Initialize properties with default values
+        self._cube_x = 3.0
+        self._cube_y = 3.0
+        self._cube_z = 3.0
+        self._can_modify = True
+        self._show_settings = False
+        self._use_presets = False
+        self._is_capsule = False
+        
+        
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify")
+        
+        # Log initialization
+        Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
+                  str(self._cube_x), str(self._cube_y), str(self._cube_z))
+
+        # Load presets from JSON file
+        self._presets = {}
+        self._load_presets()
 
         self._selection_pass = None
         CuraApplication.getInstance().globalContainerStackChanged.connect(self._updateEnabled)
 
-        # Note: if the selection is cleared with this tool active, there is no way to switch to
-        # another tool than to reselect an object (by clicking it) because the tool buttons in the
-        # toolbar will have been disabled. That is why we need to ignore the first press event
-        # after the selection has been cleared.
         Selection.selectionChanged.connect(self._onSelectionChanged)
         self._had_selection = False
         self._skip_press = False
@@ -49,6 +80,136 @@ class SupportImprover(Tool):
         self._had_selection_timer.setInterval(0)
         self._had_selection_timer.setSingleShot(True)
         self._had_selection_timer.timeout.connect(self._selectionChangeDelay)
+
+    # Property getters and setters
+    def getCubeX(self) -> float:
+        return self._cube_x
+
+    def setCubeX(self, value: float) -> None:
+        if value != self._cube_x:
+            self._cube_x = float(value)
+            self._properties["CubeX"] = float(value)
+            Logger.log("d", "CubeX changed to %s", str(self._cube_x))
+            #self.propertyChangedSignal.emit()
+
+    def getCubeY(self) -> float:
+        return self._cube_y
+
+    def setCubeY(self, value: float) -> None:
+        if value != self._cube_y:
+            self._cube_y = float(value)
+            self._properties["CubeY"] = float(value)
+            Logger.log("d", "CubeY changed to %s", str(self._cube_y))
+            #self.propertyChangedSignal.emit()
+
+    def getCubeZ(self) -> float:
+        return self._cube_z
+
+    def setCubeZ(self, value: float) -> None:
+        if value != self._cube_z:
+            self._cube_z = float(value)
+            self._properties["CubeZ"] = float(value)
+            Logger.log("d", "CubeZ changed to %s", str(self._cube_z))
+            #self.propertyChangedSignal.emit()
+
+    def getCanModify(self) -> bool:
+        return self._can_modify
+
+    def setCanModify(self, value: bool) -> None:
+        if value != self._can_modify:
+            self._can_modify = bool(value)
+            self._properties["CanModify"] = bool(value)
+            #self.propertyChangedSignal.emit()
+
+    def getShowSettings(self) -> bool:
+        return self._show_settings
+
+    def setShowSettings(self, value: bool) -> None:
+        if value != self._show_settings:
+            self._show_settings = bool(value)
+            self._properties["ShowSettings"] = bool(value)
+            #self.propertyChangedSignal.emit()
+
+    def getUsePresets(self) -> bool:
+        return self._use_presets
+
+    def setUsePresets(self, value: bool) -> None:
+        if value != self._use_presets:
+            self._use_presets = bool(value)
+            self._properties["UsePresets"] = bool(value)
+            #self.propertyChangedSignal.emit()
+
+    # Define the properties for QML
+    #cubeX = pyqtProperty(float, fget=getCubeX, fset=setCubeX, notify=propertyChangedSignal)
+    #cubeY = pyqtProperty(float, fget=getCubeY, fset=setCubeY, notify=propertyChangedSignal)
+    #cubeZ = pyqtProperty(float, fget=getCubeZ, fset=setCubeZ, notify=propertyChangedSignal)
+    #canModify = pyqtProperty(bool, fget=getCanModify, fset=setCanModify, notify=propertyChangedSignal)
+    #showSettings = pyqtProperty(bool, fget=getShowSettings, fset=setShowSettings, notify=propertyChangedSignal)
+    #usePresets = pyqtProperty(bool, fget=getUsePresets, fset=setUsePresets, notify=propertyChangedSignal)
+    #isCapsule = pyqtProperty(bool, fget=getIsCapsule, fset=setIsCapsule, notify=propertyChangedSignal)
+
+    @pyqtSlot()
+    def addModifier(self) -> None:
+        Logger.log("d", "addModifier called")
+        # Implementation here...
+
+    def getQmlPath(self):
+        """Return the path to the QML file for the tool panel."""
+        qml_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "qt6", "SupportImprover.qml")
+        Logger.log("d", f"QML path: {qml_path}")
+        return qml_path
+
+    def setProperty(self, property_name, property_value):
+        """Set a property value and emit a signal if changed."""
+        Logger.log("d", "setProperty called with property_name=%s, value=%s", property_name, str(property_value))
+        
+        if property_name not in self._properties:
+            Logger.log("w", "Tried to set non-existent property %s", property_name)
+            return
+
+        # Convert string values to appropriate types
+        if isinstance(self._properties[property_name], bool):
+            if isinstance(property_value, str):
+                property_value = property_value.lower() == "true"
+            else:
+                property_value = bool(property_value)
+        elif isinstance(self._properties[property_name], float):
+            try:
+                property_value = float(property_value)
+            except (ValueError, TypeError):
+                Logger.log("w", "Invalid value %s for property %s", str(property_value), property_name)
+                return
+
+        old_value = self._properties[property_name]
+        if old_value != property_value:
+            self._properties[property_name] = property_value
+            Logger.log("i", "Property %s changed from %s to %s", property_name, str(old_value), str(property_value))
+            #self.propertyChangedSignal.emit()
+        else:
+            Logger.log("d", "Property %s unchanged (value=%s)", property_name, str(property_value))
+
+    def getProperty(self, property_name, default_value=None):
+        """Get a property value with an optional default."""
+        value = self._properties.get(property_name, default_value)
+        Logger.log("d", "getProperty called: %s = %s", property_name, str(value))
+        return value
+
+    def triggerAction(self, action_name, *args):
+        """Handle actions triggered from the QML interface."""
+        Logger.log("d", "triggerAction called: %s", action_name)
+        if action_name == "addModifier":
+            # This will be handled by the event() function when clicking in the scene
+            pass
+        elif action_name == "showSettings":
+            self.setProperty("ShowSettings", True)
+            # Add your settings panel show logic here
+        elif action_name == "hideSettings":
+            self.setProperty("ShowSettings", False)
+            # Add your settings panel hide logic here
+        elif action_name == "selectPreset":
+            if len(args) > 0:
+                preset_name = args[0]
+                self._applyPreset(preset_name)
 
     def event(self, event):
         super().event(event)
@@ -93,7 +254,6 @@ class SupportImprover(Tool):
 
             # Add the anti_overhang_mesh cube at the picked location
             self._createModifierVolume(picked_node, picked_position)
-
 
     def setMeshType(self, node: CuraSceneNode, mesh_type: str) -> bool:
         """Set the mesh type for a specific node.
@@ -157,7 +317,7 @@ class SupportImprover(Tool):
         if settings_visibility_changed:
             self.visibility_handler.forceVisibilityChanged()
 
-        self.propertyChanged.emit()
+        #self.propertyChangedSignal.emit()
         return True
 
     def getMeshType(self, node: CuraSceneNode) -> str:
@@ -194,7 +354,16 @@ class SupportImprover(Tool):
             node.setName("Modifier Volume")
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
-            mesh = self._createCube(3)
+
+            # Get cube dimensions from properties
+            cube_x = float(self.getProperty("CubeX", 3.0))
+            cube_y = float(self.getProperty("CubeY", 3.0))
+            cube_z = float(self.getProperty("CubeZ", 3.0))
+            
+            Logger.log("d", f"Creating cube with dimensions: X={cube_x}, Y={cube_y}, Z={cube_z}")
+            
+            # Create cube with the specified dimensions
+            mesh = self._createCube(cube_x, cube_y, cube_z)
             node.setMeshData(mesh.build())
             node.calculateBoundingBoxMesh()
 
@@ -342,7 +511,7 @@ class SupportImprover(Tool):
 
             try:
                 angle_instance.setProperty("value", 52.0)  # Try setting with a valid number
-                angle_instance.resetState()  # Reset state to ensure it’s not treated as a user override
+                angle_instance.resetState()  # Reset state to ensure it's not treated as a user override
                 if validator.isValid():  # Call isValid with no additional arguments
                     Logger.log("i", "Setting 'support_angle' to 45 is valid after applying the change.")
                 else:
@@ -381,7 +550,7 @@ class SupportImprover(Tool):
             current_value = stack.getProperty("support_angle", "value")
             Logger.log("d", f"Current 'support_angle' value after forcing update: {current_value}")
 
-            self.propertyChanged.emit()        
+            #self.propertyChangedSignal.emit()        
                         
             Logger.log("i", "Support overhang angle set successfully.")
 
@@ -423,6 +592,8 @@ class SupportImprover(Tool):
         if global_container_stack:
             plugin_enabled = global_container_stack.getProperty("anti_overhang_mesh", "enabled")
 
+        # Set both the tool enabled state and the CanModify property
+        self.setProperty("CanModify", plugin_enabled)
         CuraApplication.getInstance().getController().toolEnabledChanged.emit(self._plugin_id, plugin_enabled)
 
     def _onSelectionChanged(self):
@@ -442,19 +613,21 @@ class SupportImprover(Tool):
 
         self._had_selection = has_selection
 
-    def _createCube(self, size):
+    def _createCube(self, size_x, size_y, size_z):
         mesh = MeshBuilder()
 
         # Can't use MeshBuilder.addCube() because that does not get per-vertex normals
         # Per-vertex normals require duplication of vertices
-        s = size / 2
+        s_x = size_x / 2
+        s_y = size_y / 2
+        s_z = size_z / 2
         verts = [ # 6 faces with 4 corners each
-            [-s, -s,  s], [-s,  s,  s], [ s,  s,  s], [ s, -s,  s],
-            [-s,  s, -s], [-s, -s, -s], [ s, -s, -s], [ s,  s, -s],
-            [ s, -s, -s], [-s, -s, -s], [-s, -s,  s], [ s, -s,  s],
-            [-s,  s, -s], [ s,  s, -s], [ s,  s,  s], [-s,  s,  s],
-            [-s, -s,  s], [-s, -s, -s], [-s,  s, -s], [-s,  s,  s],
-            [ s, -s, -s], [ s, -s,  s], [ s,  s,  s], [ s,  s, -s]
+            [-s_x, -s_y,  s_z], [-s_x,  s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x, -s_y,  s_z],
+            [-s_x,  s_y, -s_z], [-s_x, -s_y, -s_z], [ s_x, -s_y, -s_z], [ s_x,  s_y, -s_z],
+            [ s_x, -s_y, -s_z], [-s_x, -s_y, -s_z], [-s_x, -s_y,  s_z], [ s_x, -s_y,  s_z],
+            [-s_x,  s_y, -s_z], [ s_x,  s_y, -s_z], [ s_x,  s_y,  s_z], [-s_x,  s_y,  s_z],
+            [-s_x, -s_y,  s_z], [-s_x, -s_y, -s_z], [-s_x,  s_y, -s_z], [-s_x,  s_y,  s_z],
+            [ s_x, -s_y, -s_z], [ s_x, -s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x,  s_y, -s_z]
         ]
         mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
 
@@ -466,3 +639,38 @@ class SupportImprover(Tool):
 
         mesh.calculateNormals()
         return mesh
+
+    def _load_presets(self):
+        """Load presets from the presets.json file."""
+        try:
+            presets_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "presets.json")
+            if os.path.exists(presets_path):
+                with open(presets_path, 'r') as f:
+                    data = json.load(f)
+                    self._presets = data.get("presets", {})
+                    Logger.log("i", f"Loaded {len(self._presets)} presets from presets.json")
+            else:
+                Logger.log("w", "presets.json not found, using default presets")
+                self._presets = {
+                    "Small": {"x": 2.0, "y": 2.0, "z": 2.0},
+                    "Medium": {"x": 3.0, "y": 3.0, "z": 3.0},
+                    "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
+                }
+        except Exception as e:
+            Logger.log("e", f"Error loading presets: {e}")
+            self._presets = {
+                "Small": {"x": 2.0, "y": 2.0, "z": 2.0},
+                "Medium": {"x": 3.0, "y": 3.0, "z": 3.0},
+                "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
+            }
+
+    def _applyPreset(self, preset_name):
+        """Apply a preset to the cube dimensions."""
+        if preset_name in self._presets:
+            preset = self._presets[preset_name]
+            self.setProperty("CubeX", preset["x"])
+            self.setProperty("CubeY", preset["y"])
+            self.setProperty("CubeZ", preset["z"])
+            Logger.log("i", f"Applied preset: {preset_name}")
+        else:
+            Logger.log("w", f"Preset not found: {preset_name}")

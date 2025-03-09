@@ -3,6 +3,8 @@
     "author": "Emanuel Lönnberg",
     "version": "0.1",
     "description": "Create a volume where support settings can be changed to affect support generation.",
+    "i18n-catalog": "mysupportimprover",
     "api": 8,
-    "i18n-catalog": "cura"
+    "supported_sdk_versions": ["8.0.0", "8.1.0", "8.2.0", "8.3.0", "8.4.0", "8.5.0", "8.6.0", "8.7.0", "8.8.0", "8.9.0"],
+    "minimum_cura_version": "5.0.0"
 }
