@@ -1,6 +1,6 @@
 # Cura is released under the terms of the LGPLv3 or higher.
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtProperty
 from PyQt6.QtWidgets import QApplication
 
 from UM.Logger import Logger
@@ -43,7 +43,7 @@ class MySupportImprover(Tool):
         self._use_presets = False
         
         
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify")
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -111,6 +111,10 @@ class MySupportImprover(Tool):
         if value != self._use_presets:
             self._use_presets = bool(value)
 
+    def getPresets(self) -> dict:
+        return self._presets
+
+    Presets = pyqtProperty("QVariantMap", fget=getPresets)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -119,22 +123,22 @@ class MySupportImprover(Tool):
         return qml_path
 
 
-    def triggerAction(self, action_name, *args):
-        """Handle actions triggered from the QML interface."""
-        Logger.log("d", "triggerAction called: %s", action_name)
-        if action_name == "addModifier":
-            # This will be handled by the event() function when clicking in the scene
-            pass
-        elif action_name == "showSettings":
-            self.setProperty("ShowSettings", True)
-            # Add your settings panel show logic here
-        elif action_name == "hideSettings":
-            self.setProperty("ShowSettings", False)
-            # Add your settings panel hide logic here
-        elif action_name == "selectPreset":
-            if len(args) > 0:
-                preset_name = args[0]
-                self._applyPreset(preset_name)
+    #def triggerAction(self, action_name, *args):
+    #    """Handle actions triggered from the QML interface."""
+    #    Logger.log("d", "triggerAction called: %s", action_name)
+    #    if action_name == "addModifier":
+    #        # This will be handled by the event() function when clicking in the scene
+    #        pass
+    #    elif action_name == "showSettings":
+    #        self.setProperty("ShowSettings", True)
+    #        # Add your settings panel show logic here
+    #    elif action_name == "hideSettings":
+    #        self.setProperty("ShowSettings", False)
+    #        # Add your settings panel hide logic here
+    #    elif action_name == "selectPreset":
+    #        if len(args) > 0:
+    #            preset_name = args[0]
+    #            self._applyPreset(preset_name)
 
     def event(self, event):
         super().event(event)
@@ -595,13 +599,14 @@ class MySupportImprover(Tool):
                 "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
             }
 
-    def _applyPreset(self, preset_name):
+    def applyPreset(self, preset_name):
         """Apply a preset to the cube dimensions."""
         if preset_name in self._presets:
             preset = self._presets[preset_name]
-            self._cube_x = preset["x"]
-            self._cube_y = preset["y"]          
-            self._cube_z = preset["z"]
+            self._cube_x = float(preset["x"])
+            self._cube_y = float(preset["y"])          
+            self._cube_z = float(preset["z"])
+            self.propertyChanged.emit()
             Logger.log("i", f"Applied preset: {preset_name}")
         else:
             Logger.log("w", f"Preset not found: {preset_name}")
