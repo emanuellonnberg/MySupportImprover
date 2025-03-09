@@ -350,59 +350,9 @@ class MySupportImprover(Tool):
                     new_instance.resetState()  # Ensure that the state is not seen as a user state.
                     settings.addInstance(new_instance)
        
-            definition = stack.getSettingDefinition("support_angle")  
-            
-            property_names = definition.getPropertyNames()
-            Logger.log("d", f"Supported property names for 'support_angle': {property_names}")
-
-            value = stack.getProperty("support_angle", "value")
-            Logger.log("d", f"angle = {value}")
-                            
-            # Set the support_angle value
-            angle_definition = stack.getSettingDefinition("support_angle")
-            if not angle_definition:
-                Logger.log("e", "Could not retrieve the definition for 'support_angle'.")
-                return
-
-            # Check if a validator exists for this setting type
-            validator_type = angle_definition.getValidatorForType(angle_definition.type)
-            validator = validator_type("support_angle")
-            if validator:
-                Logger.log("d", f"Methods and attributes of Validator object: {dir(validator)}")
-            else:
-                Logger.log("e", "Validator object not found for 'support_angle'.")
-            #if validator_type:
-
-            # Assuming you found a validator, validate the desired value before setting it
-            
-            angle_instance = settings.getInstance("support_angle")
-            
-            #angle_instance.propertyChanged.connect(self.onPropertyChanged) #test
-            
-            if not angle_instance:
-                angle_instance = SettingInstance(angle_definition, settings)
-                settings.addInstance(angle_instance)
-
-            try:
-                angle_instance.setProperty("value", 52.0)  # Try setting with a valid number
-                angle_instance.resetState()  # Reset state to ensure it's not treated as a user override
-                if validator.isValid():  # Call isValid with no additional arguments
-                    Logger.log("i", "Setting 'support_angle' to 45 is valid after applying the change.")
-                else:
-                    Logger.log("e", "Setting 'support_angle' to 45 is not valid after applying the change.")
-                # Handle invalid state, possibly revert changes or alert user
-                Logger.log("i", "Support angle 'value' set to 45 successfully.")
-            except Exception as e:
-                Logger.log("e", f"Failed to set support angle 'value': {e}")
-
-            # Re-check the property value after forcing an update
-            current_value = stack.getProperty("support_angle", "value")
-            Logger.log("d", f"Current 'support_angle' value after forcing update: {current_value}")
-
-            #self.propertyChangedSignal.emit()        
-                        
-            Logger.log("i", "Support overhang angle set successfully.")
-
+            stack.setProperty("support_angle", "value", 52.0)
+            Logger.log("d", "Set support_angle to 52.0 via stack.setProperty.")
+            Logger.log("d", f"Now top property says: {stack.getProperty('support_angle', 'value')}")
             op = GroupedOperation()
             op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
             op.addOperation(SetParentOperation(node, parent))
