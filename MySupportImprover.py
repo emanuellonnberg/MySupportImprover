@@ -286,10 +286,182 @@ class MySupportImprover(Tool):
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
 
-            # Get cube dimensions from properties
-            cube_x = self._cube_x
-            cube_y = self._cube_y
-            cube_z = self._cube_z
+            # Get the mesh data from the parent
+            Logger.log("d", "Attempting to get mesh data from parent node...")
+            mesh_data = parent.getMeshData()
+            if mesh_data:
+                Logger.log("d", "Successfully got mesh data")
+                # Get the vertices and indices of the mesh
+                vertices = mesh_data.getVertices()
+                indices = mesh_data.getIndices()
+                Logger.log("d", f"Vertices: {vertices is not None}, Indices: {indices is not None}")
+                
+                if vertices is not None:
+                    Logger.log("d", f"Number of vertices: {len(vertices)}")
+                    # Get camera direction for raycasting
+                    camera = self._controller.getScene().getActiveCamera()
+                    camera_position = camera.getWorldPosition()
+                    camera_direction = (position - camera_position).normalized()
+                    
+                    # Convert position to local coordinates
+                    world_transform = parent.getWorldTransformation()
+                    if world_transform:
+                        # Convert position to 4D homogeneous coordinates (x,y,z,1)
+                        position_4d = numpy.array([position.x, position.y, position.z, 1.0])
+                        # Apply inverse transformation
+                        local_position_4d = world_transform.getInverse().getData().dot(position_4d)
+                        # Convert back to 3D coordinates
+                        local_position = Vector(local_position_4d[0], local_position_4d[1], local_position_4d[2])
+                        
+                        # Convert camera direction to local space
+                        camera_direction_4d = numpy.array([camera_direction.x, camera_direction.y, camera_direction.z, 0.0])
+                        local_camera_direction_4d = world_transform.getInverse().getData().dot(camera_direction_4d)
+                        local_camera_direction = Vector(local_camera_direction_4d[0], local_camera_direction_4d[1], local_camera_direction_4d[2]).normalized()
+                        
+                        # Find intersection with mesh
+                        min_distance = float('inf')
+                        max_distance = float('-inf')
+                        
+                        # Convert Vector to numpy array for calculations
+                        local_camera_direction_array = numpy.array([local_camera_direction.x, local_camera_direction.y, local_camera_direction.z])
+                        local_position_array = numpy.array([local_position.x, local_position.y, local_position.z])
+                        
+                        # First find the clicked triangle
+                        clicked_triangle = None
+                        clicked_triangle_index = None
+                        if indices is not None:
+                            for i in range(0, len(indices), 3):
+                                v1_idx = indices[i]
+                                v2_idx = indices[i + 1]
+                                v3_idx = indices[i + 2]
+                                
+                                v1 = vertices[v1_idx]
+                                v2 = vertices[v2_idx]
+                                v3 = vertices[v3_idx]
+                                
+                                # Calculate triangle normal
+                                edge1 = numpy.array([v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]])
+                                edge2 = numpy.array([v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]])
+                                normal = numpy.cross(edge1, edge2)
+                                normal = normal / numpy.linalg.norm(normal)
+                                
+                                # Check if ray intersects with triangle
+                                denom = numpy.dot(local_camera_direction_array, normal)
+                                if abs(denom) > 0.0001:  # Ray is not parallel to triangle
+                                    t = numpy.dot(numpy.array([v1[0] - local_position_array[0], v1[1] - local_position_array[1], v1[2] - local_position_array[2]]), normal) / denom
+                                    if t > 0:  # Intersection is in front of ray origin
+                                        # Calculate intersection point
+                                        intersection = local_position + local_camera_direction * t
+                                        
+                                        # Check if point is inside triangle
+                                        if self._isPointInTriangle(intersection, v1, v2, v3):
+                                            clicked_triangle = (v1, v2, v3)
+                                            clicked_triangle_index = i
+                                            break
+                        else:
+                            for i in range(0, len(vertices), 3):
+                                if i + 2 >= len(vertices):
+                                    break
+                                v1 = vertices[i]
+                                v2 = vertices[i + 1]
+                                v3 = vertices[i + 2]
+                                
+                                # Calculate triangle normal
+                                edge1 = numpy.array([v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]])
+                                edge2 = numpy.array([v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]])
+                                normal = numpy.cross(edge1, edge2)
+                                normal = normal / numpy.linalg.norm(normal)
+                                
+                                # Check if ray intersects with triangle
+                                denom = numpy.dot(local_camera_direction_array, normal)
+                                if abs(denom) > 0.0001:  # Ray is not parallel to triangle
+                                    t = numpy.dot(numpy.array([v1[0] - local_position_array[0], v1[1] - local_position_array[1], v1[2] - local_position_array[2]]), normal) / denom
+                                    if t > 0:  # Intersection is in front of ray origin
+                                        # Calculate intersection point
+                                        intersection = local_position + local_camera_direction * t
+                                        
+                                        # Check if point is inside triangle
+                                        if self._isPointInTriangle(intersection, v1, v2, v3):
+                                            clicked_triangle = (v1, v2, v3)
+                                            clicked_triangle_index = i
+                                            break
+                        
+                        if clicked_triangle:
+                            Logger.log("d", "Found clicked triangle, expanding outward...")
+                            # Create a set to store processed triangles
+                            processed_triangles = set()
+                            # Create a queue for breadth-first search
+                            from collections import deque
+                            queue = deque([(clicked_triangle_index, clicked_triangle)])
+                            processed_triangles.add(clicked_triangle_index)
+                            
+                            while queue:
+                                current_index, (v1, v2, v3) = queue.popleft()
+                                
+                                # Calculate intersection with current triangle
+                                edge1 = numpy.array([v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]])
+                                edge2 = numpy.array([v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]])
+                                normal = numpy.cross(edge1, edge2)
+                                normal = normal / numpy.linalg.norm(normal)
+                                
+                                denom = numpy.dot(local_camera_direction_array, normal)
+                                if abs(denom) > 0.0001:
+                                    t = numpy.dot(numpy.array([v1[0] - local_position_array[0], v1[1] - local_position_array[1], v1[2] - local_position_array[2]]), normal) / denom
+                                    if t > 0:
+                                        intersection = local_position + local_camera_direction * t
+                                        if self._isPointInTriangle(intersection, v1, v2, v3):
+                                            distance = t
+                                            min_distance = min(min_distance, distance)
+                                            max_distance = max(max_distance, distance)
+                                
+                                # Find connected triangles
+                                if indices is not None:
+                                    # Get vertices of current triangle
+                                    v1_idx = indices[current_index]
+                                    v2_idx = indices[current_index + 1]
+                                    v3_idx = indices[current_index + 2]
+                                    
+                                    # Find triangles sharing vertices
+                                    for i in range(0, len(indices), 3):
+                                        if i not in processed_triangles:
+                                            t1_idx = indices[i]
+                                            t2_idx = indices[i + 1]
+                                            t3_idx = indices[i + 2]
+                                            
+                                            # Check if triangles share any vertices
+                                            if (t1_idx in [v1_idx, v2_idx, v3_idx] or 
+                                                t2_idx in [v1_idx, v2_idx, v3_idx] or 
+                                                t3_idx in [v1_idx, v2_idx, v3_idx]):
+                                                queue.append((i, (vertices[t1_idx], vertices[t2_idx], vertices[t3_idx])))
+                                                processed_triangles.add(i)
+                                else:
+                                    # For non-indexed meshes, check next three vertices
+                                    next_index = current_index + 3
+                                    if next_index + 2 < len(vertices):
+                                        queue.append((next_index, (vertices[next_index], vertices[next_index + 1], vertices[next_index + 2])))
+                                        processed_triangles.add(next_index)
+                            
+                            Logger.log("d", f"Processed {len(processed_triangles)} triangles")
+                        else:
+                            Logger.log("d", "No clicked triangle found, using default dimensions")
+                            cube_x = self._cube_x
+                            cube_y = self._cube_y
+                            cube_z = self._cube_z
+                    else:
+                        Logger.log("w", "Could not get world transformation")
+                        cube_x = self._cube_x
+                        cube_y = self._cube_y
+                        cube_z = self._cube_z
+                else:
+                    Logger.log("w", "Could not get vertices from mesh data")
+                    cube_x = self._cube_x
+                    cube_y = self._cube_y
+                    cube_z = self._cube_z
+            else:
+                Logger.log("w", "Could not get mesh data from parent")
+                cube_x = self._cube_x
+                cube_y = self._cube_y
+                cube_z = self._cube_z
             
             Logger.log("d", f"Creating cube with dimensions: X={cube_x}, Y={cube_y}, Z={cube_z}")
             
@@ -312,7 +484,7 @@ class MySupportImprover(Tool):
                 
             # Instead of manually setting the mesh type, use setMeshType
             if not self.setMeshType(node, "cutting_mesh"):
-                Logger.log("e", "Failed to set mesh type to infill_mesh.")
+                Logger.log("e", "Failed to set mesh type to cutting_mesh.")
                 return
 
             stack = node.callDecoration("getStack")  # Stack is where settings modifications are stored
@@ -329,7 +501,7 @@ class MySupportImprover(Tool):
             "support_top_distance": None,
             "support_xy_distance": None,
             "support_bottom_distance": None,
-            "support_angle": None  # TODO: Why does it not work to set the angle here?
+            "support_angle": None
             }
             
             for property_key in settingsList:
@@ -337,7 +509,7 @@ class MySupportImprover(Tool):
                     definition = stack.getSettingDefinition(property_key)
                     new_instance = SettingInstance(definition, settings)
                     value = settingsList[property_key]
-                    if value != None :
+                    if value != None:
                         new_instance.setProperty("value", value)
                     new_instance.resetState()  # Ensure that the state is not seen as a user state.
                     settings.addInstance(new_instance)
@@ -345,6 +517,7 @@ class MySupportImprover(Tool):
             stack.setProperty("support_angle", "value", float(self._support_angle))
             Logger.log("d", "Set support_angle to " + str(self._support_angle) + " via stack.setProperty.")
             Logger.log("d", f"Now top property says: {stack.getProperty('support_angle', 'value')}")
+            
             op = GroupedOperation()
             op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
             op.addOperation(SetParentOperation(node, parent))
@@ -355,13 +528,33 @@ class MySupportImprover(Tool):
                     
             Logger.log("i", "Modifier volume created and added to scene successfully.")
             
-            
-            #angle_instance.propertyChanged.disconnect(self.onPropertyChanged) #test
-            
-            
-            
         except Exception as e:
             Logger.log("e", f"An error occurred while creating the modifier volume: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
+    def _isPointInTriangle(self, point, v1, v2, v3):
+        """Check if a point is inside a triangle using barycentric coordinates."""
+        def sign(p1, p2, p3):
+            # Convert Vector to numpy array if needed
+            if isinstance(p1, Vector):
+                p1 = numpy.array([p1.x, p1.y, p1.z])
+            if isinstance(p2, Vector):
+                p2 = numpy.array([p2.x, p2.y, p2.z])
+            if isinstance(p3, Vector):
+                p3 = numpy.array([p3.x, p3.y, p3.z])
+            
+            # Use array indexing for all calculations
+            return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+        
+        d1 = sign(point, v1, v2)
+        d2 = sign(point, v2, v3)
+        d3 = sign(point, v3, v1)
+        
+        has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+        has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+        
+        return not (has_neg and has_pos)
 
     def _removeEraserMesh(self, node: CuraSceneNode):
         parent = node.getParent()
@@ -437,27 +630,24 @@ class MySupportImprover(Tool):
 
     def _load_presets(self):
         """Load presets from the presets.json file."""
+        # Define default presets
+        self._presets = {
+            "Small": {"x": 10.0, "y": 10.0, "z": 10.0},
+            "Medium": {"x": 20.0, "y": 20.0, "z": 20.0}, 
+            "Large": {"x": 30.0, "y": 30.0, "z": 30.0}
+        }
+        
         try:
             presets_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "presets.json")
             if os.path.exists(presets_path):
                 with open(presets_path, 'r') as f:
                     data = json.load(f)
-                    self._presets = data.get("presets", {})
+                    self._presets = data.get("presets", self._presets)
                     Logger.log("i", f"Loaded {len(self._presets)} presets from presets.json")
             else:
                 Logger.log("w", "presets.json not found, using default presets")
-                self._presets = {
-                    "Small": {"x": 2.0, "y": 2.0, "z": 2.0},
-                    "Medium": {"x": 3.0, "y": 3.0, "z": 3.0},
-                    "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
-                }
         except Exception as e:
             Logger.log("e", f"Error loading presets: {e}")
-            self._presets = {
-                "Small": {"x": 2.0, "y": 2.0, "z": 2.0},
-                "Medium": {"x": 3.0, "y": 3.0, "z": 3.0},
-                "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
-            }
 
     def applyPreset(self, preset_name):
         """Apply a preset to the cube dimensions."""
