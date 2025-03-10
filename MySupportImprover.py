@@ -141,24 +141,6 @@ class MySupportImprover(Tool):
         Logger.log("d", f"QML path: {qml_path}")
         return qml_path
 
-
-    #def triggerAction(self, action_name, *args):
-    #    """Handle actions triggered from the QML interface."""
-    #    Logger.log("d", "triggerAction called: %s", action_name)
-    #    if action_name == "addModifier":
-    #        # This will be handled by the event() function when clicking in the scene
-    #        pass
-    #    elif action_name == "showSettings":
-    #        self.setProperty("ShowSettings", True)
-    #        # Add your settings panel show logic here
-    #    elif action_name == "hideSettings":
-    #        self.setProperty("ShowSettings", False)
-    #        # Add your settings panel hide logic here
-    #    elif action_name == "selectPreset":
-    #        if len(args) > 0:
-    #            preset_name = args[0]
-    #            self._applyPreset(preset_name)
-
     def event(self, event):
         super().event(event)
         modifiers = QApplication.keyboardModifiers()
