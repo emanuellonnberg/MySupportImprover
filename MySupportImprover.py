@@ -465,9 +465,9 @@ class MySupportImprover(Tool):
     def _load_presets(self):
         """Load presets from the presets.json file."""
         try:
-            presets_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "presets.json")
-            if os.path.exists(presets_path):
-                with open(presets_path, 'r') as f:
+            self._presets_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "presets.json")
+            if os.path.exists(self._presets_path):
+                with open(self._presets_path, 'r') as f:
                     data = json.load(f)
                     self._presets = data.get("presets", {})
                     Logger.log("i", f"Loaded {len(self._presets)} presets from presets.json")
@@ -478,6 +478,8 @@ class MySupportImprover(Tool):
                     "Medium": {"x": 3.0, "y": 3.0, "z": 3.0},
                     "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
                 }
+                # Save default presets to file
+                self._save_presets_to_file()
         except Exception as e:
             Logger.log("e", f"Error loading presets: {e}")
             self._presets = {
@@ -485,6 +487,49 @@ class MySupportImprover(Tool):
                 "Medium": {"x": 3.0, "y": 3.0, "z": 3.0},
                 "Large": {"x": 5.0, "y": 5.0, "z": 5.0}
             }
+
+    def _save_presets_to_file(self):
+        """Save presets to the JSON file."""
+        try:
+            data = {"presets": self._presets}
+            with open(self._presets_path, 'w') as f:
+                json.dump(data, f, indent=4)
+            Logger.log("i", f"Saved {len(self._presets)} presets to presets.json")
+        except Exception as e:
+            Logger.log("e", f"Error saving presets: {e}")
+
+    def savePreset(self, preset_name):
+        """Save current dimensions as a new preset."""
+        if not preset_name:
+            Logger.log("w", "Cannot save preset with empty name")
+            return False
+            
+        if preset_name in ["Custom"]:
+            Logger.log("w", "Cannot use reserved name 'Custom' for preset")
+            return False
+            
+        # Create new preset with current dimensions
+        new_preset = {
+            "x": float(self._cube_x),
+            "y": float(self._cube_y),
+            "z": float(self._cube_z)
+        }
+        
+        # Add to presets dictionary
+        self._presets[preset_name] = new_preset
+        
+        # Save to file
+        self._save_presets_to_file()
+        
+        # Update current preset
+        self._is_custom = False
+        self.setCurrentPreset(preset_name)
+        
+        # Notify UI of changes
+        self.propertyChanged.emit()
+        
+        Logger.log("i", f"Saved new preset: {preset_name}")
+        return True
 
     def applyPreset(self, preset_name):
         """Apply a preset to the cube dimensions."""

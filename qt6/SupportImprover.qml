@@ -100,6 +100,38 @@ Item {
             }
         }
 
+        // Save Preset Row - only visible in custom mode
+        Row {
+            id: savePresetRow
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom")
+            height: visible ? implicitHeight : 0
+            
+            TextField {
+                id: presetNameField
+                width: 120
+                height: UM.Theme.getSize("setting_control").height
+                placeholderText: catalog.i18nc("@label", "Preset name")
+                validator: RegularExpressionValidator {
+                    regularExpression: /^[a-zA-Z0-9\- ]+$/
+                }
+            }
+
+            Button {
+                id: savePresetButton
+                width: 70
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@button", "Save")
+                enabled: presetNameField.text.length > 0
+                onClicked: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.triggerActionWithData("savePreset", presetNameField.text)
+                        presetNameField.text = ""  // Clear the field after saving
+                    }
+                }
+            }
+        }
+
         Grid {
             id: mainGrid
             columns: 2
