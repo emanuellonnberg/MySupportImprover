@@ -28,6 +28,23 @@ Item {
         if (UM.ActiveTool) {
             console.log("Tool active")
             console.log("Initial values - X:", currentX, "Y:", currentY, "Z:", currentZ)
+            
+            // Only apply preset values if not using custom values
+            if (!UM.ActiveTool.properties.getValue("IsCustom")) {
+                var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                if (currentPreset && UM.ActiveTool.properties.getValue("Presets")) {
+                    var presets = UM.ActiveTool.properties.getValue("Presets")
+                    if (presets[currentPreset]) {
+                        var preset = presets[currentPreset]
+                        xSlider.value = parseFloat(preset.x)
+                        ySlider.value = parseFloat(preset.y)
+                        zSlider.value = parseFloat(preset.z)
+                        xInput.text = preset.x.toFixed(1)
+                        yInput.text = preset.y.toFixed(1)
+                        zInput.text = preset.z.toFixed(1)
+                    }
+                }
+            }
         }
     }
 
@@ -54,7 +71,27 @@ Item {
                 id: presetComboBox
                 width: 120
                 height: UM.Theme.getSize("setting_control").height
-                model: UM.ActiveTool && UM.ActiveTool.properties.getValue("Presets") ? Object.keys(UM.ActiveTool.properties.getValue("Presets")) : []
+                model: {
+                    if (UM.ActiveTool && UM.ActiveTool.properties.getValue("Presets")) {
+                        var presets = Object.keys(UM.ActiveTool.properties.getValue("Presets"))
+                        if (UM.ActiveTool.properties.getValue("IsCustom")) {
+                            presets.push("Custom")
+                        }
+                        return presets
+                    }
+                    return []
+                }
+                currentIndex: {
+                    if (UM.ActiveTool) {
+                        if (UM.ActiveTool.properties.getValue("IsCustom")) {
+                            return model.indexOf("Custom")
+                        }
+                        var presetName = UM.ActiveTool.properties.getValue("CurrentPreset")
+                        var index = model.indexOf(presetName)
+                        return index >= 0 ? index : 0
+                    }
+                    return 0
+                }
                 onActivated: {
                     if (UM.ActiveTool) {
                         UM.ActiveTool.triggerActionWithData("applyPreset", currentText)
@@ -88,7 +125,17 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 1.0
                     to: 100.0
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("CubeX") : defaultX
+                    value: {
+                        if (UM.ActiveTool) {
+                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                            var presets = UM.ActiveTool.properties.getValue("Presets")
+                            if (currentPreset && presets && presets[currentPreset]) {
+                                return parseFloat(presets[currentPreset].x)
+                            }
+                            return UM.ActiveTool.properties.getValue("CubeX")
+                        }
+                        return defaultX
+                    }
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("CubeX", value)
@@ -142,7 +189,17 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 1.0
                     to: 100.0
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("CubeY") : defaultY
+                    value: {
+                        if (UM.ActiveTool) {
+                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                            var presets = UM.ActiveTool.properties.getValue("Presets")
+                            if (currentPreset && presets && presets[currentPreset]) {
+                                return parseFloat(presets[currentPreset].y)
+                            }
+                            return UM.ActiveTool.properties.getValue("CubeY")
+                        }
+                        return defaultY
+                    }
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("CubeY", value)
@@ -196,7 +253,17 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 1.0
                     to: 100.0
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("CubeZ") : defaultZ
+                    value: {
+                        if (UM.ActiveTool) {
+                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                            var presets = UM.ActiveTool.properties.getValue("Presets")
+                            if (currentPreset && presets && presets[currentPreset]) {
+                                return parseFloat(presets[currentPreset].z)
+                            }
+                            return UM.ActiveTool.properties.getValue("CubeZ")
+                        }
+                        return defaultZ
+                    }
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("CubeZ", value)

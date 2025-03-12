@@ -51,8 +51,10 @@ class MySupportImprover(Tool):
         self._show_settings = False
         self._use_presets = False
         self._support_angle = 45.0  # Default support angle
+        self._current_preset = "Medium"  # Add current preset tracking
+        self._is_custom = False  # Track if using custom values
         
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle")
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -81,6 +83,7 @@ class MySupportImprover(Tool):
     def setCubeX(self, value: float) -> None:
         if value != self._cube_x:
             self._cube_x = float(value)
+            self.setIsCustom(True)
             Logger.log("d", "CubeX changed to %s", str(self._cube_x))
 
     def getCubeY(self) -> float:
@@ -89,6 +92,7 @@ class MySupportImprover(Tool):
     def setCubeY(self, value: float) -> None:
         if value != self._cube_y:
             self._cube_y = float(value)
+            self.setIsCustom(True)
             Logger.log("d", "CubeY changed to %s", str(self._cube_y))
 
     def getCubeZ(self) -> float:
@@ -97,6 +101,7 @@ class MySupportImprover(Tool):
     def setCubeZ(self, value: float) -> None:
         if value != self._cube_z:
             self._cube_z = float(value)
+            self.setIsCustom(True)
             Logger.log("d", "CubeZ changed to %s", str(self._cube_z))
 
     def getCanModify(self) -> bool:
@@ -134,6 +139,28 @@ class MySupportImprover(Tool):
             Logger.log("d", "Support angle changed to %s", str(self._support_angle))
 
     SupportAngle = pyqtProperty(float, fget=getSupportAngle, fset=setSupportAngle)
+
+    def getCurrentPreset(self) -> str:
+        return self._current_preset
+
+    def setCurrentPreset(self, preset_name: str) -> None:
+        if preset_name != self._current_preset:
+            self._current_preset = preset_name
+            self.propertyChanged.emit()
+
+    CurrentPreset = pyqtProperty(str, fget=getCurrentPreset, fset=setCurrentPreset)
+
+    def getIsCustom(self) -> bool:
+        return self._is_custom
+
+    def setIsCustom(self, value: bool) -> None:
+        if value != self._is_custom:
+            self._is_custom = value
+            if value:
+                self._current_preset = "Custom"
+            self.propertyChanged.emit()
+
+    IsCustom = pyqtProperty(bool, fget=getIsCustom, fset=setIsCustom)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -461,11 +488,17 @@ class MySupportImprover(Tool):
 
     def applyPreset(self, preset_name):
         """Apply a preset to the cube dimensions."""
+        if preset_name == "Custom":
+            self.setIsCustom(True)
+            return
+            
         if preset_name in self._presets:
             preset = self._presets[preset_name]
             self._cube_x = float(preset["x"])
             self._cube_y = float(preset["y"])          
             self._cube_z = float(preset["z"])
+            self._is_custom = False
+            self.setCurrentPreset(preset_name)
             self.propertyChanged.emit()
             Logger.log("i", f"Applied preset: {preset_name}")
         else:
