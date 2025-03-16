@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+from .OverhangDetector import OverhangDetector
 from PyQt6.QtCore import Qt, QTimer, pyqtProperty
 from PyQt6.QtWidgets import QApplication
 from UM.Resources import Resources
@@ -302,21 +303,38 @@ class MySupportImprover(Tool):
                 Logger.log("i", "Setting is valid after change.")
             else:
                 Logger.log("e", "Setting became invalid after change.")
-            
+                        
     def _createModifierVolume(self, parent: CuraSceneNode, position: Vector): 
         try:
             node = CuraSceneNode()
             
             Logger.log("d", "Creating modifier volume node...")
         
+            # Use OverhangDetector to get support region properties
+            try:
+                detector = OverhangDetector(parent)
+                if detector is None:
+                    Logger.log("e", "Failed to create OverhangDetector")
+                    raise ValueError("Failed to create OverhangDetector")
+                    
+                size, center, angle = detector.detectRegion(position)
+                Logger.log("d", f"Got region from detector - size: {size}, center: {center}, angle: {angle}")
+                
+            except Exception as e:
+                Logger.log("w", f"Could not detect overhang region: {str(e)}, using default values")
+                size = Vector(self._cube_x, self._cube_y, self._cube_z)
+                center = position
+                angle = self._support_angle
+
+            # Create a support modifier volume using the detected properties
             node.setName("Modifier Volume")
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
 
             # Get cube dimensions from properties
-            cube_x = self._cube_x
-            cube_y = self._cube_y
-            cube_z = self._cube_z
+            cube_x = size.x
+            cube_y = size.y
+            cube_z = size.z
             
             Logger.log("d", f"Creating cube with dimensions: X={cube_x}, Y={cube_y}, Z={cube_z}")
             

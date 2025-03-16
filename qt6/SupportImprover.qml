@@ -29,7 +29,7 @@ Item {
             console.log("Tool active")
             console.log("Initial values - X:", currentX, "Y:", currentY, "Z:", currentZ)
             
-            // Only apply preset values if not using custom values
+            // Initialize slider values
             if (!UM.ActiveTool.properties.getValue("IsCustom")) {
                 var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
                 if (currentPreset && UM.ActiveTool.properties.getValue("Presets")) {
@@ -44,7 +44,12 @@ Item {
                         zInput.text = preset.z.toFixed(1)
                     }
                 }
+            } else {
+                xSlider.value = UM.ActiveTool.properties.getValue("CubeX")
+                ySlider.value = UM.ActiveTool.properties.getValue("CubeY")
+                zSlider.value = UM.ActiveTool.properties.getValue("CubeZ")
             }
+            angleSlider.value = UM.ActiveTool.properties.getValue("SupportAngle")
         }
     }
 
@@ -157,17 +162,6 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 1.0
                     to: 100.0
-                    value: {
-                        if (UM.ActiveTool) {
-                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
-                            var presets = UM.ActiveTool.properties.getValue("Presets")
-                            if (currentPreset && presets && presets[currentPreset]) {
-                                return parseFloat(presets[currentPreset].x)
-                            }
-                            return UM.ActiveTool.properties.getValue("CubeX")
-                        }
-                        return defaultX
-                    }
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("CubeX", value)
@@ -221,17 +215,6 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 1.0
                     to: 100.0
-                    value: {
-                        if (UM.ActiveTool) {
-                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
-                            var presets = UM.ActiveTool.properties.getValue("Presets")
-                            if (currentPreset && presets && presets[currentPreset]) {
-                                return parseFloat(presets[currentPreset].y)
-                            }
-                            return UM.ActiveTool.properties.getValue("CubeY")
-                        }
-                        return defaultY
-                    }
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("CubeY", value)
@@ -285,17 +268,6 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 1.0
                     to: 100.0
-                    value: {
-                        if (UM.ActiveTool) {
-                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
-                            var presets = UM.ActiveTool.properties.getValue("Presets")
-                            if (currentPreset && presets && presets[currentPreset]) {
-                                return parseFloat(presets[currentPreset].z)
-                            }
-                            return UM.ActiveTool.properties.getValue("CubeZ")
-                        }
-                        return defaultZ
-                    }
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("CubeZ", value)
@@ -349,7 +321,6 @@ Item {
                     height: UM.Theme.getSize("setting_control").height
                     from: 0.0
                     to: 90.0
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportAngle") : 45.0
                     onValueChanged: {
                         if (UM.ActiveTool) {
                             UM.ActiveTool.setProperty("SupportAngle", value)
