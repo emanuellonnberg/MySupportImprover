@@ -1,0 +1,116 @@
+name: Test Build
+
+on:
+  workflow_dispatch:  # Manual trigger
+    inputs:
+      version_suffix:
+        description: 'Version suffix (e.g., test, dev-123)'
+        required: false
+        default: 'test'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get version info
+      id: version
+      run: |
+        BASE_VERSION=$(grep -o '"version": *"[^"]*"' plugin.json | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          SUFFIX="${{ github.event.inputs.version_suffix }}"
+          BUILD_VERSION="${BASE_VERSION}-${SUFFIX}"
+        elif [ "${{ github.event_name }}" = "pull_request" ]; then
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          BUILD_VERSION="${BASE_VERSION}-pr${PR_NUMBER}-${SHORT_SHA}"
+        else
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          BUILD_VERSION="${BASE_VERSION}-dev-${SHORT_SHA}"
+        fi
+        echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_OUTPUT
+        echo "BUILD_VERSION=$BUILD_VERSION" >> $GITHUB_OUTPUT
+        echo "Building test version: $BUILD_VERSION"
+
+    - name: Create package structure
+      run: |
+        mkdir -p build/MySupportImprover/qt6
+
+    - name: Copy plugin files
+      run: |
+        cp plugin.json build/MySupportImprover/
+        cp __init__.py build/MySupportImprover/
+        cp MySupportImprover.py build/MySupportImprover/
+        cp presets.json build/MySupportImprover/
+        cp down.svg build/MySupportImprover/
+        cp qt6/SupportImprover.qml build/MySupportImprover/qt6/
+        cp README.md build/MySupportImprover/
+        cp CHANGELOG.md build/MySupportImprover/
+
+    - name: Add test build notice
+      run: |
+        echo "" >> build/MySupportImprover/README.md
+        echo "---" >> build/MySupportImprover/README.md
+        echo "" >> build/MySupportImprover/README.md
+        echo "## TEST BUILD NOTICE" >> build/MySupportImprover/README.md
+        echo "" >> build/MySupportImprover/README.md
+        echo "**This is a test build and not an official release.**" >> build/MySupportImprover/README.md
+        echo "" >> build/MySupportImprover/README.md
+        echo "- Build Version: ${{ steps.version.outputs.BUILD_VERSION }}" >> build/MySupportImprover/README.md
+        echo "- Git SHA: ${{ github.sha }}" >> build/MySupportImprover/README.md
+        echo "- Built: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> build/MySupportImprover/README.md
+        echo "- Branch: ${{ github.ref_name }}" >> build/MySupportImprover/README.md
+
+    - name: Create test package
+      run: |
+        cd build
+        zip -r MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip MySupportImprover/
+        cd ..
+
+    - name: Calculate checksum
+      run: |
+        cd build
+        sha256sum MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip > MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip.sha256
+        cat MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip.sha256
+        cd ..
+
+    - name: Upload test artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}
+        path: |
+          build/MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip
+          build/MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip.sha256
+        retention-days: 30
+
+    - name: Build summary
+      run: |
+        echo "## Test Build Complete! 🎉" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Version:** ${{ steps.version.outputs.BUILD_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Base Version:** ${{ steps.version.outputs.BASE_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Download Artifact" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "1. Go to the **Actions** tab in GitHub" >> $GITHUB_STEP_SUMMARY
+        echo "2. Click on this workflow run" >> $GITHUB_STEP_SUMMARY
+        echo "3. Scroll down to **Artifacts**" >> $GITHUB_STEP_SUMMARY
+        echo "4. Download \`MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Installation" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "1. Extract the downloaded zip" >> $GITHUB_STEP_SUMMARY
+        echo "2. Copy the \`MySupportImprover\` folder to your Cura plugins directory" >> $GITHUB_STEP_SUMMARY
+        echo "3. Restart Cura" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "⚠️ **Note:** This is a test build, not an official release." >> $GITHUB_STEP_SUMMARY
+
+    - name: Verify package contents
+      run: |
+        echo "Package contents:"
+        unzip -l build/MySupportImprover-${{ steps.version.outputs.BUILD_VERSION }}.zip

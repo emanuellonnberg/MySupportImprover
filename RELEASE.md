@@ -16,6 +16,57 @@ We follow [Semantic Versioning](https://semver.org/) (SemVer):
 - `1.0.0` → `1.1.0` - New feature added
 - `1.0.0` → `2.0.0` - Breaking changes (e.g., settings format changed)
 
+### Pre-Release Versions
+
+For testing before stable releases:
+- **Alpha**: `1.0.0-alpha.1` - Early testing, unstable
+- **Beta**: `1.0.0-beta.1` - Feature complete, needs testing
+- **RC**: `1.0.0-rc.1` - Release candidate, almost ready
+- **Dev**: `1.0.0-dev.1` - Development builds
+
+Pre-releases don't require plugin.json version to match exactly.
+
+## Testing Builds Without Releasing
+
+### Method 1: Local Test Build (Recommended for Quick Testing)
+
+Build and test locally before any release:
+
+```bash
+# Linux/macOS
+./package.sh
+
+# Windows
+package.bat
+```
+
+This creates a zip file you can test in Cura without creating any GitHub release.
+
+### Method 2: GitHub Test Build Workflow
+
+Trigger a test build on GitHub without creating a release:
+
+1. Go to: **Actions** → **Test Build** → **Run workflow**
+2. Enter a version suffix (optional, e.g., "test", "dev-feature-x")
+3. Click **Run workflow**
+4. Wait for completion
+5. Download the artifact from the workflow run
+6. Test in Cura
+
+**Benefits:**
+- No git tags created
+- No releases published
+- Clean test environment
+- Automatic versioning with git SHA
+- 30-day artifact retention
+
+### Method 3: Pull Request Test Builds
+
+Test builds are automatically created for all pull requests:
+- Version format: `1.0.0-pr<number>-<sha>`
+- Download from PR's Actions tab
+- Verify changes before merging
+
 ## Pre-Release Checklist
 
 Before creating a release, ensure:
@@ -64,6 +115,46 @@ This method automatically builds and publishes releases using GitHub Actions.
    - Go to: https://github.com/emanuellonnberg/MySupportImprover/releases
    - Check that the release was created
    - Download and test the package
+
+### Creating Pre-Releases (Beta, RC, Alpha, Dev)
+
+Pre-releases are perfect for testing before a stable release:
+
+1. **Choose a pre-release type:**
+   - `v1.0.0-beta.1` - Beta testing
+   - `v1.0.0-rc.1` - Release candidate
+   - `v1.0.0-alpha.1` - Alpha testing
+   - `v1.0.0-dev.1` - Development build
+
+2. **Create and push the tag** (no need to update plugin.json):
+   ```bash
+   git tag -a v1.0.0-beta.1 -m "Beta release 1.0.0-beta.1"
+   git push origin v1.0.0-beta.1
+   ```
+
+3. **GitHub Actions will:**
+   - Build the package
+   - Create a **Pre-release** on GitHub (marked with "Pre-release" badge)
+   - Skip version validation (pre-releases don't need exact match)
+
+4. **Test the pre-release:**
+   - Download from GitHub Releases
+   - Install and test in Cura
+   - Gather feedback
+
+5. **Iterate if needed:**
+   ```bash
+   # Make fixes, then:
+   git tag -a v1.0.0-beta.2 -m "Beta release 1.0.0-beta.2"
+   git push origin v1.0.0-beta.2
+   ```
+
+6. **When ready for stable:**
+   - Update plugin.json version to `1.0.0`
+   - Update CHANGELOG.md
+   - Create stable tag: `v1.0.0`
+
+**Note:** Pre-releases appear in GitHub Releases but are clearly marked as pre-release.
 
 ### Method 2: Manual Release
 

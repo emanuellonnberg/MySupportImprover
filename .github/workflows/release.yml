@@ -3,7 +3,11 @@ name: Create Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Triggers on version tags like v1.0.0
+      - 'v*.*.*'          # Stable: v1.0.0
+      - 'v*.*.*-beta.*'   # Beta: v1.0.0-beta.1
+      - 'v*.*.*-rc.*'     # Release Candidate: v1.0.0-rc.1
+      - 'v*.*.*-alpha.*'  # Alpha: v1.0.0-alpha.1
+      - 'v*.*.*-dev.*'    # Dev: v1.0.0-dev.1
 
 jobs:
   build-and-release:
@@ -15,9 +19,21 @@ jobs:
 
     - name: Get version from tag
       id: get_version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      run: |
+        FULL_VERSION="${GITHUB_REF#refs/tags/v}"
+        echo "VERSION=$FULL_VERSION" >> $GITHUB_OUTPUT
 
-    - name: Verify version matches plugin.json
+        # Detect if this is a pre-release
+        if [[ "$FULL_VERSION" =~ (beta|rc|alpha|dev) ]]; then
+          echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
+          echo "This is a pre-release version: $FULL_VERSION"
+        else
+          echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
+          echo "This is a stable release: $FULL_VERSION"
+        fi
+
+    - name: Verify version matches plugin.json (stable only)
+      if: steps.get_version.outputs.IS_PRERELEASE == 'false'
       run: |
         PLUGIN_VERSION=$(grep -o '"version": *"[^"]*"' plugin.json | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
         TAG_VERSION="${{ steps.get_version.outputs.VERSION }}"
@@ -28,6 +44,14 @@ jobs:
           exit 1
         fi
         echo "Version check passed: $PLUGIN_VERSION"
+
+    - name: Version info for pre-release
+      if: steps.get_version.outputs.IS_PRERELEASE == 'true'
+      run: |
+        PLUGIN_VERSION=$(grep -o '"version": *"[^"]*"' plugin.json | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
+        echo "Pre-release version: ${{ steps.get_version.outputs.VERSION }}"
+        echo "Base plugin.json version: $PLUGIN_VERSION"
+        echo "Note: Pre-releases don't require exact version match"
 
     - name: Create package structure
       run: |
@@ -75,7 +99,7 @@ jobs:
         files: build/MySupportImprover-${{ steps.get_version.outputs.VERSION }}.zip
         body: ${{ steps.changelog.outputs.NOTES }}
         draft: false
-        prerelease: false
+        prerelease: ${{ steps.get_version.outputs.IS_PRERELEASE }}
         name: Release v${{ steps.get_version.outputs.VERSION }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
