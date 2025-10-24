@@ -1,0 +1,35 @@
+{
+    "version": "1.0.0",
+    "presets": {
+        "Small": {
+            "x": 2.0,
+            "y": 2.0,
+            "z": 2.0,
+            "description": "Small precision volume for detailed support control"
+        },
+        "Medium": {
+            "x": 3.0,
+            "y": 3.0,
+            "z": 3.0,
+            "description": "Medium-sized volume for general purpose support modifications"
+        },
+        "Large": {
+            "x": 5.0,
+            "y": 5.0,
+            "z": 5.0,
+            "description": "Large volume for broad support coverage"
+        },
+        "Wide": {
+            "x": 10.0,
+            "y": 5.0,
+            "z": 3.0,
+            "description": "Wide horizontal volume for spanning support areas"
+        },
+        "Tall": {
+            "x": 3.0,
+            "y": 3.0,
+            "z": 10.0,
+            "description": "Tall vertical volume for height-specific support control"
+        }
+    }
+}

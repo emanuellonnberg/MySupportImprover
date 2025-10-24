@@ -1,0 +1,29 @@
+# Build outputs
+build/
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# User data (don't commit custom user presets if separate)
+# presets.json  # Uncomment if you want to exclude user presets

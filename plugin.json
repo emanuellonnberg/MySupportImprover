@@ -1,10 +1,13 @@
 {
     "name": "My Support Improver",
     "author": "Emanuel Lönnberg",
-    "version": "0.1",
+    "version": "1.0.0",
     "description": "Create a volume where support settings can be changed to affect support generation.",
     "i18n-catalog": "mysupportimprover",
     "api": 8,
     "supported_sdk_versions": ["8.0.0", "8.1.0", "8.2.0", "8.3.0", "8.4.0", "8.5.0", "8.6.0", "8.7.0", "8.8.0", "8.9.0"],
-    "minimum_cura_version": "5.0.0"
+    "minimum_cura_version": "5.0.0",
+    "license": "LGPLv3",
+    "homepage": "https://github.com/emanuellonnberg/MySupportImprover",
+    "repository": "https://github.com/emanuellonnberg/MySupportImprover"
 }
