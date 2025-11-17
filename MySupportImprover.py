@@ -814,10 +814,14 @@ class MySupportImprover(Tool):
         Args:
             vertices: Vertex positions (in local space if transform is provided)
             indices: Face indices
-            threshold_angle: Angle threshold in degrees
+            threshold_angle: Angle threshold in degrees (Cura support angle - max overhang without support)
             transform: Optional transformation matrix to convert normals to world space
         """
-        threshold_rad = numpy.deg2rad(threshold_angle)
+        # Convert support angle to the angle from vertical
+        # Support angle of 45° means surfaces up to 45° from horizontal are printable
+        # This corresponds to normals at angles > (90° + 45°) = 135° from up vector
+        threshold_from_up = 90.0 + threshold_angle
+        threshold_rad = numpy.deg2rad(threshold_from_up)
         overhang_faces = []
 
         for face_id, face in enumerate(indices):
@@ -858,7 +862,7 @@ class MySupportImprover(Tool):
                 dot_product = numpy.dot(normal, up_vector)
                 angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
 
-                # Check if angle exceeds threshold
+                # Check if angle exceeds threshold (surface normal points more down than threshold)
                 if angle > threshold_rad:
                     overhang_faces.append(face_id)
 
