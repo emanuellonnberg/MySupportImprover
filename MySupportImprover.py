@@ -53,8 +53,9 @@ class MySupportImprover(Tool):
         self._support_angle = 45.0  # Default support angle
         self._current_preset = "Medium"  # Add current preset tracking
         self._is_custom = False  # Track if using custom values
-        
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom")
+        self._export_mode = False  # Export mesh data mode
+
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -162,6 +163,20 @@ class MySupportImprover(Tool):
 
     IsCustom = pyqtProperty(bool, fget=getIsCustom, fset=setIsCustom)
 
+    def getExportMode(self) -> bool:
+        return self._export_mode
+
+    def setExportMode(self, value: bool) -> None:
+        if value != self._export_mode:
+            self._export_mode = value
+            if value:
+                Logger.log("i", "Export mode ENABLED - click on mesh to export data")
+            else:
+                Logger.log("i", "Export mode DISABLED - normal operation")
+            self.propertyChanged.emit()
+
+    ExportMode = pyqtProperty(bool, fget=getExportMode, fset=setExportMode)
+
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
         qml_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "qt6", "SupportImprover.qml")
@@ -172,7 +187,6 @@ class MySupportImprover(Tool):
         super().event(event)
         modifiers = QApplication.keyboardModifiers()
         ctrl_is_active = modifiers & Qt.KeyboardModifier.ControlModifier
-        shift_is_active = modifiers & Qt.KeyboardModifier.ShiftModifier
 
         if event.type == Event.MousePressEvent and MouseEvent.LeftButton in event.buttons and self._controller.getToolsEnabled():
             if ctrl_is_active:
@@ -193,9 +207,9 @@ class MySupportImprover(Tool):
                 # There is no slicable object at the picked location
                 return
 
-            # SHIFT+CLICK: Export mesh for debugging
-            if shift_is_active:
-                Logger.log("i", "Shift+Click detected - exporting mesh data for analysis")
+            # EXPORT MODE: Export mesh for debugging
+            if self._export_mode:
+                Logger.log("i", "Export mode active - exporting mesh data for analysis")
                 self._exportMeshData(picked_node)
                 return
 

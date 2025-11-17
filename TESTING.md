@@ -7,8 +7,9 @@ This guide explains how to extract mesh data from Cura and test overhang detecti
 ### 1. Extract Mesh Data from Cura
 
 1. Load a model in Cura
-2. Activate the **MySupportImprover** tool
-3. **Hold SHIFT and click** on your model
+2. Activate the **MySupportImprover** tool (press E key)
+3. **Check the "Export Mode" checkbox** in the tool panel
+4. **Click on your model**
 
 This will export two files to `~/MySupportImprover_exports/`:
 - `mesh_<name>_<timestamp>.stl` - Binary STL file (viewable in any 3D viewer)
@@ -149,7 +150,8 @@ Once algorithms work correctly on exported data:
 
 ### "File not found"
 - Check `~/MySupportImprover_exports/` directory exists
-- Verify Shift+Click worked (check Cura logs)
+- Verify Export Mode checkbox was enabled (check Cura logs)
+- Make sure you clicked on the model after enabling Export Mode
 - Try absolute path to file
 
 ### "Import errors"

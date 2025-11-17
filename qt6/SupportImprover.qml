@@ -106,7 +106,7 @@ Item {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
             visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom")
             height: visible ? implicitHeight : 0
-            
+
             TextField {
                 id: presetNameField
                 width: 120
@@ -128,6 +128,51 @@ Item {
                         UM.ActiveTool.triggerActionWithData("savePreset", presetNameField.text)
                         presetNameField.text = ""  // Clear the field after saving
                     }
+                }
+            }
+        }
+
+        // Export Mode Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: exportModeCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ExportMode") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("ExportMode", checked)
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: exportModeCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: exportModeCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: exportModeCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Export Mode (click to save mesh data)")
+                    font: UM.Theme.getFont("default")
+                    color: exportModeCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: exportModeCheckbox.indicator.width + exportModeCheckbox.spacing
                 }
             }
         }
