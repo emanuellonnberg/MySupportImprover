@@ -352,25 +352,24 @@ class MySupportImprover(Tool):
             else:
                 Logger.log("e", "Setting became invalid after change.")
             
-    def _createModifierVolume(self, parent: CuraSceneNode, position: Vector): 
+    def _createModifierVolume(self, parent: CuraSceneNode, position: Vector):
+        """Create a modifier volume using the default cube dimensions from properties"""
+        self._createModifierVolumeWithSize(parent, position, self._cube_x, self._cube_y, self._cube_z)
+
+    def _createModifierVolumeWithSize(self, parent: CuraSceneNode, position: Vector, size_x: float, size_y: float, size_z: float):
         try:
             node = CuraSceneNode()
-            
+
             Logger.log("d", "Creating modifier volume node...")
-        
+
             node.setName("Modifier Volume")
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
 
-            # Get cube dimensions from properties
-            cube_x = self._cube_x
-            cube_y = self._cube_y
-            cube_z = self._cube_z
-            
-            Logger.log("d", f"Creating cube with dimensions: X={cube_x}, Y={cube_y}, Z={cube_z}")
-            
+            Logger.log("d", f"Creating cube with dimensions: X={size_x}, Y={size_y}, Z={size_z}")
+
             # Create cube with the specified dimensions
-            mesh = self._createCube(cube_x, cube_y, cube_z)
+            mesh = self._createCube(size_x, size_y, size_z)
             node.setMeshData(mesh.build())
             node.calculateBoundingBoxMesh()
 
@@ -738,18 +737,33 @@ class MySupportImprover(Tool):
 
             for region_id, region_faces in enumerate(regions):
                 if len(region_faces) >= min_faces:
-                    # Calculate region center in LOCAL space
+                    # Calculate region center and bounds in LOCAL space
                     region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
+                    min_bounds, max_bounds = region_bounds
+
+                    # Calculate region dimensions in local space
+                    region_size = max_bounds - min_bounds
+
+                    # Add padding (20% on each side)
+                    padding_factor = 1.4  # 20% padding on each side = 1.4x total size
+                    padded_size_x = float(region_size[0] * padding_factor)
+                    padded_size_y = float(region_size[1] * padding_factor)
+                    padded_size_z = float(region_size[2] * padding_factor)
+
+                    # Ensure minimum size of 1mm
+                    padded_size_x = max(1.0, padded_size_x)
+                    padded_size_y = max(1.0, padded_size_y)
+                    padded_size_z = max(1.0, padded_size_z)
 
                     # Transform region center to WORLD space (like manual click positions)
                     center_local_vec = Vector(region_center_local[0], region_center_local[1], region_center_local[2])
                     center_world = center_local_vec.preMultiply(world_transform)
 
-                    # Create a support blocker at the region center (in world space)
-                    self._createModifierVolume(node, center_world)
+                    # Create a support blocker sized to fit the region
+                    self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
                     created_count += 1
 
-                    Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}]")
+                    Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
 
             Logger.log("i", f"=== CREATED {created_count} SUPPORT BLOCKERS ===")
 
