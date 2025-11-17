@@ -172,6 +172,7 @@ class MySupportImprover(Tool):
         super().event(event)
         modifiers = QApplication.keyboardModifiers()
         ctrl_is_active = modifiers & Qt.KeyboardModifier.ControlModifier
+        shift_is_active = modifiers & Qt.KeyboardModifier.ShiftModifier
 
         if event.type == Event.MousePressEvent and MouseEvent.LeftButton in event.buttons and self._controller.getToolsEnabled():
             if ctrl_is_active:
@@ -190,6 +191,12 @@ class MySupportImprover(Tool):
             picked_node = self._controller.getScene().findObject(self._selection_pass.getIdAtPosition(event.x, event.y))
             if not picked_node:
                 # There is no slicable object at the picked location
+                return
+
+            # SHIFT+CLICK: Export mesh for debugging
+            if shift_is_active:
+                Logger.log("i", "Shift+Click detected - exporting mesh data for analysis")
+                self._exportMeshData(picked_node)
                 return
 
             node_stack = picked_node.callDecoration("getStack")
@@ -439,7 +446,7 @@ class MySupportImprover(Tool):
     def _createCube(self, size_x, size_y, size_z):
         mesh = MeshBuilder()
         s_x = size_x / 2
-        s_y = size_y / 2  
+        s_y = size_y / 2
         s_z = size_z / 2
 
         # Switched Y and Z coordinates order to fix dimensions
@@ -461,6 +468,144 @@ class MySupportImprover(Tool):
 
         mesh.calculateNormals()
         return mesh
+
+    def _exportMeshData(self, node: CuraSceneNode):
+        """Export mesh data to files for external analysis"""
+        import struct
+        import time
+
+        if not node or not node.getMeshData():
+            Logger.log("e", "No mesh data available to export")
+            return
+
+        try:
+            # Get transformed mesh data (with position/rotation applied)
+            mesh_data = node.getMeshData().getTransformed(node.getWorldTransformation())
+
+            # Get mesh arrays
+            vertices = mesh_data.getVertices()
+            has_indices = mesh_data.hasIndices()
+
+            if has_indices:
+                indices = mesh_data.getIndices()
+            else:
+                Logger.log("w", "Mesh has no indices - vertices only")
+                indices = None
+
+            # Log mesh info
+            Logger.log("i", "=== MESH DATA EXPORT ===")
+            Logger.log("i", f"Node name: {node.getName()}")
+            Logger.log("i", f"Vertices: {len(vertices)}")
+            Logger.log("i", f"Has indices: {has_indices}")
+            if has_indices:
+                Logger.log("i", f"Faces: {len(indices)}")
+
+            # Create output directory
+            output_dir = os.path.expanduser("~/MySupportImprover_exports")
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate filename with timestamp
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            base_filename = f"mesh_{node.getName()}_{timestamp}"
+
+            # Export to STL (binary format)
+            stl_path = os.path.join(output_dir, f"{base_filename}.stl")
+            self._exportToSTL(mesh_data, stl_path)
+            Logger.log("i", f"Exported STL to: {stl_path}")
+
+            # Export to JSON (detailed data)
+            json_path = os.path.join(output_dir, f"{base_filename}.json")
+            self._exportToJSON(mesh_data, node, json_path)
+            Logger.log("i", f"Exported JSON to: {json_path}")
+
+            Logger.log("i", f"=== EXPORT COMPLETE ===")
+            Logger.log("i", f"Files saved to: {output_dir}")
+
+        except Exception as e:
+            Logger.log("e", f"Failed to export mesh data: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
+    def _exportToSTL(self, mesh_data, filepath):
+        """Export mesh to binary STL format"""
+        import struct
+
+        vertices = mesh_data.getVertices()
+
+        if mesh_data.hasIndices():
+            indices = mesh_data.getIndices()
+        else:
+            # Create indices for non-indexed mesh
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        with open(filepath, 'wb') as f:
+            # 80-byte header
+            header = b'Binary STL exported from MySupportImprover'
+            header = header.ljust(80, b'\x00')
+            f.write(header)
+
+            # Face count
+            face_count = len(indices)
+            f.write(struct.pack("<I", int(face_count)))
+
+            # Write triangles
+            for face in indices:
+                try:
+                    v0 = vertices[face[0]]
+                    v1 = vertices[face[1]]
+                    v2 = vertices[face[2]]
+
+                    # Calculate normal
+                    edge1 = v1 - v0
+                    edge2 = v2 - v0
+                    normal = numpy.cross(edge1, edge2)
+                    normal_length = numpy.linalg.norm(normal)
+                    if normal_length > 1e-10:
+                        normal = normal / normal_length
+                    else:
+                        normal = numpy.array([0.0, 0.0, 1.0])
+
+                    # Write normal
+                    f.write(struct.pack("<fff", float(normal[0]), float(normal[1]), float(normal[2])))
+                    # Write vertices
+                    f.write(struct.pack("<fff", float(v0[0]), float(v0[1]), float(v0[2])))
+                    f.write(struct.pack("<fff", float(v1[0]), float(v1[1]), float(v1[2])))
+                    f.write(struct.pack("<fff", float(v2[0]), float(v2[1]), float(v2[2])))
+                    # Attribute byte count
+                    f.write(struct.pack("<H", 0))
+                except Exception as e:
+                    Logger.log("e", f"Error writing face: {e}")
+
+    def _exportToJSON(self, mesh_data, node, filepath):
+        """Export detailed mesh data to JSON"""
+        vertices = mesh_data.getVertices()
+
+        data = {
+            "node_name": node.getName(),
+            "vertex_count": len(vertices),
+            "has_indices": mesh_data.hasIndices(),
+            "vertices": vertices.tolist(),
+        }
+
+        if mesh_data.hasIndices():
+            indices = mesh_data.getIndices()
+            data["face_count"] = len(indices)
+            data["indices"] = indices.tolist()
+
+        if mesh_data.hasNormals():
+            normals = mesh_data.getNormals()
+            data["normals"] = normals.tolist()
+
+        # Add bounding box info
+        data["bounds"] = {
+            "min": vertices.min(axis=0).tolist(),
+            "max": vertices.max(axis=0).tolist(),
+            "center": vertices.mean(axis=0).tolist()
+        }
+
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+
 
     def _load_presets(self):
         """Load presets from the presets.json file."""
