@@ -803,19 +803,32 @@ class MySupportImprover(Tool):
             closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
             Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
 
-            # Check if this face is an overhang
-            if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._support_angle, world_transform):
-                Logger.log("w", "Clicked face is not an overhang - no blocker created")
-                return
-
-            Logger.log("i", "Clicked face is an overhang - finding connected region...")
-
             # Build adjacency graph for ALL faces (needed for BFS)
+            Logger.log("i", "Building face adjacency graph...")
             adjacency = self._buildAdjacencyGraph(indices)
 
-            # Do BFS from clicked face to find only overhang faces that are connected
+            # Check if this face is an overhang
+            start_face_id = closest_face_id
+            if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._support_angle, world_transform):
+                Logger.log("i", "Clicked face is not an overhang - searching nearby for overhang faces...")
+
+                # Search nearby faces (BFS up to 3 levels deep) for an overhang
+                start_face_id = self._findNearbyOverhang(closest_face_id, vertices_local, indices, adjacency,
+                                                         self._support_angle, world_transform, max_depth=3)
+
+                if start_face_id is None:
+                    Logger.log("w", "No overhang faces found near click position - no blocker created")
+                    return
+
+                Logger.log("i", f"Found overhang face {start_face_id} near click position")
+            else:
+                Logger.log("i", "Clicked face is an overhang")
+
+            Logger.log("i", "Finding connected overhang region...")
+
+            # Do BFS from start face to find only overhang faces that are connected
             region_faces = self._findConnectedOverhangRegion(
-                closest_face_id, vertices_local, indices, adjacency,
+                start_face_id, vertices_local, indices, adjacency,
                 self._support_angle, world_transform
             )
 
@@ -1051,6 +1064,37 @@ class MySupportImprover(Tool):
                 adjacency[f2].append(f1)
 
         return adjacency
+
+    def _findNearbyOverhang(self, start_face_id, vertices, indices, adjacency, threshold_angle, transform, max_depth=3):
+        """Search nearby faces for an overhang face using limited BFS
+
+        Args:
+            start_face_id: Face to start search from
+            max_depth: Maximum neighbor levels to search (default 3)
+
+        Returns:
+            Face ID of nearest overhang face, or None if not found
+        """
+        visited = set()
+        queue = [(start_face_id, 0)]  # (face_id, depth)
+        visited.add(start_face_id)
+
+        while queue:
+            current_face, depth = queue.pop(0)
+
+            # Check if current face is an overhang
+            if self._isFaceOverhang(vertices, indices, current_face, threshold_angle, transform):
+                return current_face
+
+            # Continue searching neighbors if within depth limit
+            if depth < max_depth:
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append((neighbor, depth + 1))
+
+        return None
 
     def _findConnectedOverhangRegion(self, start_face_id, vertices, indices, adjacency, threshold_angle, transform):
         """Find connected overhang region starting from a specific face using BFS"""
