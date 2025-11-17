@@ -824,8 +824,8 @@ class MySupportImprover(Tool):
                 if transform:
                     # Convert numpy array to Vector for transformation
                     normal_vec = Vector(normal_local[0], normal_local[1], normal_local[2])
-                    # Transform the normal (use normal transformation, not position transformation)
-                    normal_world = normal_vec.preMultiply(transform.getData()[0:3, 0:3])
+                    # Transform the normal (rotation only - translation doesn't affect direction vectors)
+                    normal_world = normal_vec.preMultiply(transform)
                     # Normalize after transformation
                     normal_world_length = normal_world.length()
                     if normal_world_length > 1e-10:
