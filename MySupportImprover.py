@@ -210,7 +210,14 @@ class MySupportImprover(Tool):
             # EXPORT MODE: Export mesh for debugging
             if self._export_mode:
                 Logger.log("i", "Export mode active - exporting mesh data for analysis")
-                self._exportMeshData(picked_node)
+
+                # Get the clicked position in 3D space
+                active_camera = self._controller.getScene().getActiveCamera()
+                picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+                picking_pass.render()
+                picked_position = picking_pass.getPickedPosition(event.x, event.y)
+
+                self._exportMeshData(picked_node, picked_position)
                 return
 
             node_stack = picked_node.callDecoration("getStack")
@@ -483,7 +490,7 @@ class MySupportImprover(Tool):
         mesh.calculateNormals()
         return mesh
 
-    def _exportMeshData(self, node: CuraSceneNode):
+    def _exportMeshData(self, node: CuraSceneNode, picked_position: Vector = None):
         """Export mesh data to files for external analysis"""
         import struct
         import time
@@ -514,6 +521,10 @@ class MySupportImprover(Tool):
             if has_indices:
                 Logger.log("i", f"Faces: {len(indices)}")
 
+            # Log clicked position if available
+            if picked_position:
+                Logger.log("i", f"Clicked position: [{picked_position.x:.2f}, {picked_position.y:.2f}, {picked_position.z:.2f}]")
+
             # Create output directory
             output_dir = os.path.expanduser("~/MySupportImprover_exports")
             os.makedirs(output_dir, exist_ok=True)
@@ -529,7 +540,7 @@ class MySupportImprover(Tool):
 
             # Export to JSON (detailed data)
             json_path = os.path.join(output_dir, f"{base_filename}.json")
-            self._exportToJSON(mesh_data, node, json_path)
+            self._exportToJSON(mesh_data, node, json_path, picked_position)
             Logger.log("i", f"Exported JSON to: {json_path}")
 
             Logger.log("i", f"=== EXPORT COMPLETE ===")
@@ -590,7 +601,7 @@ class MySupportImprover(Tool):
                 except Exception as e:
                     Logger.log("e", f"Error writing face: {e}")
 
-    def _exportToJSON(self, mesh_data, node, filepath):
+    def _exportToJSON(self, mesh_data, node, filepath, picked_position: Vector = None):
         """Export detailed mesh data to JSON"""
         vertices = mesh_data.getVertices()
 
@@ -617,8 +628,51 @@ class MySupportImprover(Tool):
             "center": vertices.mean(axis=0).tolist()
         }
 
+        # Add clicked position if available
+        if picked_position:
+            click_pos = numpy.array([picked_position.x, picked_position.y, picked_position.z])
+            data["clicked_position"] = click_pos.tolist()
+
+            # Find closest face to clicked position
+            if mesh_data.hasIndices():
+                closest_face_id, closest_distance = self._findClosestFace(vertices, indices, click_pos)
+                data["closest_face_id"] = int(closest_face_id)
+                data["closest_face_distance"] = float(closest_distance)
+
+                # Get the vertices of the closest face
+                closest_face_indices = indices[closest_face_id]
+                closest_face_vertices = [
+                    vertices[closest_face_indices[0]].tolist(),
+                    vertices[closest_face_indices[1]].tolist(),
+                    vertices[closest_face_indices[2]].tolist()
+                ]
+                data["closest_face_vertices"] = closest_face_vertices
+
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
+
+    def _findClosestFace(self, vertices, indices, point):
+        """Find the closest face to a given point"""
+        min_distance = float('inf')
+        closest_face_id = 0
+
+        for face_id, face in enumerate(indices):
+            # Get face vertices
+            v0 = vertices[face[0]]
+            v1 = vertices[face[1]]
+            v2 = vertices[face[2]]
+
+            # Calculate face center (centroid)
+            face_center = (v0 + v1 + v2) / 3.0
+
+            # Calculate distance from point to face center
+            distance = numpy.linalg.norm(face_center - point)
+
+            if distance < min_distance:
+                min_distance = distance
+                closest_face_id = face_id
+
+        return closest_face_id, min_distance
 
 
     def _load_presets(self):

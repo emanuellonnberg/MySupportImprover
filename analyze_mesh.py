@@ -34,10 +34,18 @@ def load_mesh_from_json(filepath):
     if 'normals' in data:
         normals = np.array(data['normals'], dtype=np.float32)
 
+    # Extract clicked position data if available
+    clicked_data = {}
+    if 'clicked_position' in data:
+        clicked_data['position'] = np.array(data['clicked_position'], dtype=np.float32)
+        clicked_data['closest_face_id'] = data.get('closest_face_id')
+        clicked_data['closest_face_distance'] = data.get('closest_face_distance')
+
     return {
         'vertices': vertices,
         'indices': indices,
         'normals': normals,
+        'clicked_data': clicked_data,
         'metadata': {
             'name': data.get('node_name', 'unknown'),
             'vertex_count': data['vertex_count'],
@@ -91,6 +99,7 @@ def load_mesh_from_stl(filepath):
             'vertices': np.array(vertices, dtype=np.float32),
             'indices': np.array(indices, dtype=np.int32),
             'normals': None,
+            'clicked_data': {},  # STL files don't have clicked position data
             'metadata': {
                 'name': os.path.basename(filepath),
                 'vertex_count': len(vertices),
@@ -323,6 +332,7 @@ def main():
     indices = mesh['indices']
     normals = mesh['normals']
     metadata = mesh['metadata']
+    clicked_data = mesh.get('clicked_data', {})
 
     print(f"\nMesh loaded: {metadata['name']}")
     print(f"Vertices: {metadata['vertex_count']}")
@@ -332,6 +342,14 @@ def main():
         bounds = metadata['bounds']
         if bounds:
             print(f"Bounds: {bounds}")
+
+    # Display clicked position if available
+    if clicked_data and 'position' in clicked_data:
+        pos = clicked_data['position']
+        print(f"\n🎯 Clicked Position: [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
+        if 'closest_face_id' in clicked_data:
+            print(f"   Closest face ID: {clicked_data['closest_face_id']}")
+            print(f"   Distance to face: {clicked_data['closest_face_distance']:.2f} mm")
 
     # Detect overhangs
     overhang_face_ids, angles, overhang_mask = detect_overhangs(
@@ -357,9 +375,22 @@ def main():
 
     # Analyze each region
     print("\nRegion analysis:")
+    clicked_region = None
     for i, region in enumerate(regions):
         analysis = analyze_overhang_region(region, vertices, indices, angles)
-        print(f"\n  Region {i+1}:")
+
+        # Check if this region contains the clicked face
+        is_clicked_region = False
+        if clicked_data and 'closest_face_id' in clicked_data:
+            if clicked_data['closest_face_id'] in region:
+                is_clicked_region = True
+                clicked_region = i + 1
+
+        region_label = f"Region {i+1}"
+        if is_clicked_region:
+            region_label += " 🎯 (CLICKED)"
+
+        print(f"\n  {region_label}:")
         print(f"    Faces: {analysis['face_count']}")
         print(f"    Vertices: {analysis['vertex_count']}")
         print(f"    Surface area: {analysis['surface_area']:.2f} mm²")
@@ -367,6 +398,10 @@ def main():
         print(f"    Average angle: {analysis['avg_angle']:.1f}°")
         print(f"    Bounding box center: [{analysis['bbox_center'][0]:.2f}, {analysis['bbox_center'][1]:.2f}, {analysis['bbox_center'][2]:.2f}]")
         print(f"    Bounding box size: [{analysis['bbox_size'][0]:.2f}, {analysis['bbox_size'][1]:.2f}, {analysis['bbox_size'][2]:.2f}]")
+
+    # Highlight clicked region
+    if clicked_region:
+        print(f"\n💡 You clicked on Region {clicked_region} - this is the overhang you're interested in!")
 
     # Export overhang faces
     output_dir = os.path.dirname(filepath)
