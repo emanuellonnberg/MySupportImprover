@@ -8,6 +8,8 @@ algorithms WITHOUT needing Cura running.
 Usage:
     python analyze_mesh.py path/to/mesh.json
     python analyze_mesh.py path/to/mesh.stl
+    python analyze_mesh.py path/to/mesh.json.zip
+    python analyze_mesh.py path/to/mesh.stl.zip
 """
 
 import json
@@ -15,6 +17,8 @@ import sys
 import os
 import numpy as np
 from collections import deque
+import zipfile
+import tempfile
 
 
 def load_mesh_from_json(filepath):
@@ -106,6 +110,54 @@ def load_mesh_from_stl(filepath):
                 'face_count': face_count
             }
         }
+
+
+def rebuild_indexed_mesh(vertices):
+    """Rebuild index buffer for non-indexed mesh by merging duplicate vertices"""
+    print("Rebuilding index buffer from non-indexed mesh...")
+    print(f"Original vertices: {len(vertices)}")
+
+    # Create a dictionary to find duplicate vertices
+    vertex_map = {}
+    unique_vertices = []
+    indices = []
+
+    tolerance = 1e-6  # Vertices within this distance are considered the same
+
+    for i in range(0, len(vertices), 3):
+        # Process each triangle (3 vertices)
+        triangle_indices = []
+
+        for j in range(3):
+            if i + j >= len(vertices):
+                break
+
+            v = vertices[i + j]
+
+            # Round vertex coordinates to find duplicates
+            v_key = tuple(np.round(v / tolerance) * tolerance)
+
+            if v_key in vertex_map:
+                # Reuse existing vertex
+                triangle_indices.append(vertex_map[v_key])
+            else:
+                # Add new unique vertex
+                vertex_idx = len(unique_vertices)
+                unique_vertices.append(v)
+                vertex_map[v_key] = vertex_idx
+                triangle_indices.append(vertex_idx)
+
+        if len(triangle_indices) == 3:
+            indices.append(triangle_indices)
+
+    unique_vertices = np.array(unique_vertices, dtype=np.float32)
+    indices = np.array(indices, dtype=np.int32)
+
+    print(f"Unique vertices: {len(unique_vertices)}")
+    print(f"Faces: {len(indices)}")
+    print(f"Vertex reduction: {100 * (1 - len(unique_vertices)/len(vertices)):.1f}%")
+
+    return unique_vertices, indices
 
 
 def compute_face_normals(vertices, indices):
@@ -222,6 +274,14 @@ def find_connected_overhang_regions(overhang_face_ids, overhang_mask, adjacency)
 
 def analyze_overhang_region(region_face_ids, vertices, indices, angles):
     """Analyze properties of an overhang region"""
+    # Filter out invalid face IDs
+    max_face_id = len(indices) - 1
+    valid_face_ids = [fid for fid in region_face_ids if fid <= max_face_id]
+
+    if len(valid_face_ids) < len(region_face_ids):
+        print(f"Warning: Filtered out {len(region_face_ids) - len(valid_face_ids)} invalid face IDs")
+
+    region_face_ids = np.array(valid_face_ids)
     region_faces = indices[region_face_ids]
     region_vertex_ids = np.unique(region_faces.flatten())
     region_vertices = vertices[region_vertex_ids]
@@ -263,7 +323,14 @@ def export_overhang_faces(filepath, vertices, indices, overhang_face_ids):
     """Export only the overhang faces to STL for visualization"""
     import struct
 
-    overhang_faces = indices[overhang_face_ids]
+    # Filter out invalid face IDs
+    max_face_id = len(indices) - 1
+    valid_face_ids = overhang_face_ids[overhang_face_ids <= max_face_id]
+
+    if len(valid_face_ids) < len(overhang_face_ids):
+        print(f"Warning: Filtered out {len(overhang_face_ids) - len(valid_face_ids)} invalid face IDs before export")
+
+    overhang_faces = indices[valid_face_ids]
 
     with open(filepath, 'wb') as f:
         # STL header
@@ -300,9 +367,33 @@ def export_overhang_faces(filepath, vertices, indices, overhang_face_ids):
     print(f"Exported overhang faces to: {filepath}")
 
 
+def extract_from_zip(zip_path):
+    """Extract file from zip and return path to extracted file"""
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        # Get list of files in zip
+        file_list = zip_ref.namelist()
+
+        # Find JSON or STL file
+        for filename in file_list:
+            if filename.endswith('.json') or filename.endswith('.stl'):
+                # Extract to temp directory
+                temp_dir = tempfile.mkdtemp()
+                extracted_path = zip_ref.extract(filename, temp_dir)
+                print(f"Extracted {filename} from zip archive")
+                return extracted_path
+
+        print("Error: No .json or .stl file found in zip archive")
+        sys.exit(1)
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python analyze_mesh.py <mesh_file.json or mesh_file.stl>")
+        print("Usage: python analyze_mesh.py <mesh_file>")
+        print("\nSupported formats:")
+        print("  - mesh.json")
+        print("  - mesh.stl")
+        print("  - mesh.json.zip")
+        print("  - mesh.stl.zip")
         print("\nThis script analyzes mesh data exported from MySupportImprover")
         print("and tests overhang detection algorithms.")
         sys.exit(1)
@@ -317,15 +408,22 @@ def main():
     print("MySupportImprover Mesh Analysis")
     print("=" * 60)
 
+    # Handle zipped files
+    if filepath.endswith('.zip'):
+        print(f"\nExtracting from zip: {filepath}")
+        filepath = extract_from_zip(filepath)
+
     # Load mesh
     print(f"\nLoading mesh from: {filepath}")
 
     if filepath.endswith('.json'):
+        print("Loading JSON format (may take a moment for large files)...")
         mesh = load_mesh_from_json(filepath)
     elif filepath.endswith('.stl'):
+        print("Loading STL format...")
         mesh = load_mesh_from_stl(filepath)
     else:
-        print("Error: Unsupported file format. Use .json or .stl")
+        print("Error: Unsupported file format. Use .json, .stl, or .zip")
         sys.exit(1)
 
     vertices = mesh['vertices']
@@ -343,13 +441,21 @@ def main():
         if bounds:
             print(f"Bounds: {bounds}")
 
+    # Check if this is a non-indexed mesh (vertices stored as triplets)
+    # This happens when has_indices is false in the JSON
+    if len(vertices) == len(indices) * 3:
+        print("\n⚠️  Non-indexed mesh detected (vertices as triplets)")
+        print("Rebuilding index buffer to enable connectivity analysis...")
+        vertices, indices = rebuild_indexed_mesh(vertices)
+
     # Display clicked position if available
     if clicked_data and 'position' in clicked_data:
         pos = clicked_data['position']
         print(f"\n🎯 Clicked Position: [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
-        if 'closest_face_id' in clicked_data:
+        if 'closest_face_id' in clicked_data and clicked_data['closest_face_id'] is not None:
             print(f"   Closest face ID: {clicked_data['closest_face_id']}")
-            print(f"   Distance to face: {clicked_data['closest_face_distance']:.2f} mm")
+            if 'closest_face_distance' in clicked_data:
+                print(f"   Distance to face: {clicked_data['closest_face_distance']:.2f} mm")
 
     # Detect overhangs
     overhang_face_ids, angles, overhang_mask = detect_overhangs(
@@ -373,20 +479,24 @@ def main():
     # Find connected regions
     regions = find_connected_overhang_regions(overhang_face_ids, overhang_mask, adjacency)
 
-    # Analyze each region
-    print("\nRegion analysis:")
+    # Sort regions by size (largest first) and analyze only top regions
+    regions_sorted = sorted(enumerate(regions), key=lambda x: len(x[1]), reverse=True)
+    max_regions_to_analyze = min(20, len(regions))  # Analyze top 20 or fewer
+
+    print(f"\nAnalyzing top {max_regions_to_analyze} largest overhang regions (out of {len(regions)} total):")
     clicked_region = None
-    for i, region in enumerate(regions):
+
+    for rank, (original_idx, region) in enumerate(regions_sorted[:max_regions_to_analyze]):
         analysis = analyze_overhang_region(region, vertices, indices, angles)
 
         # Check if this region contains the clicked face
         is_clicked_region = False
-        if clicked_data and 'closest_face_id' in clicked_data:
+        if clicked_data and 'closest_face_id' in clicked_data and clicked_data['closest_face_id'] is not None:
             if clicked_data['closest_face_id'] in region:
                 is_clicked_region = True
-                clicked_region = i + 1
+                clicked_region = rank + 1
 
-        region_label = f"Region {i+1}"
+        region_label = f"Region #{rank+1} (#{original_idx+1} overall)"
         if is_clicked_region:
             region_label += " 🎯 (CLICKED)"
 
