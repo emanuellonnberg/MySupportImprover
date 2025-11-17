@@ -132,6 +132,55 @@ Item {
             }
         }
 
+        // Auto Detect Mode Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: autoDetectCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("AutoDetect") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("AutoDetect", checked)
+                        // Disable export mode when auto-detect is enabled
+                        if (checked && UM.ActiveTool.properties.getValue("ExportMode")) {
+                            UM.ActiveTool.setProperty("ExportMode", false)
+                        }
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: autoDetectCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: autoDetectCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: autoDetectCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Auto-Detect Overhangs")
+                    font: UM.Theme.getFont("default")
+                    color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: autoDetectCheckbox.indicator.width + autoDetectCheckbox.spacing
+                }
+            }
+        }
+
         // Export Mode Checkbox
         Row {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
@@ -143,6 +192,10 @@ Item {
                 onToggled: {
                     if (UM.ActiveTool) {
                         UM.ActiveTool.setProperty("ExportMode", checked)
+                        // Disable auto-detect when export mode is enabled
+                        if (checked && UM.ActiveTool.properties.getValue("AutoDetect")) {
+                            UM.ActiveTool.setProperty("AutoDetect", false)
+                        }
                     }
                 }
 

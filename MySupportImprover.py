@@ -54,8 +54,9 @@ class MySupportImprover(Tool):
         self._current_preset = "Medium"  # Add current preset tracking
         self._is_custom = False  # Track if using custom values
         self._export_mode = False  # Export mesh data mode
+        self._auto_detect = False  # Automatic overhang detection mode
 
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode")
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode", "AutoDetect")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -177,6 +178,20 @@ class MySupportImprover(Tool):
 
     ExportMode = pyqtProperty(bool, fget=getExportMode, fset=setExportMode)
 
+    def getAutoDetect(self) -> bool:
+        return self._auto_detect
+
+    def setAutoDetect(self, value: bool) -> None:
+        if value != self._auto_detect:
+            self._auto_detect = value
+            if value:
+                Logger.log("i", "Auto-detect mode ENABLED - click to detect overhangs automatically")
+            else:
+                Logger.log("i", "Auto-detect mode DISABLED - manual cube placement")
+            self.propertyChanged.emit()
+
+    AutoDetect = pyqtProperty(bool, fget=getAutoDetect, fset=setAutoDetect)
+
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
         qml_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "qt6", "SupportImprover.qml")
@@ -218,6 +233,12 @@ class MySupportImprover(Tool):
                 picked_position = picking_pass.getPickedPosition(event.x, event.y)
 
                 self._exportMeshData(picked_node, picked_position)
+                return
+
+            # AUTO-DETECT MODE: Automatically detect overhangs and create support blockers
+            if self._auto_detect:
+                Logger.log("i", "Auto-detect mode active - detecting overhangs automatically")
+                self._autoDetectOverhangs(picked_node)
                 return
 
             node_stack = picked_node.callDecoration("getStack")
@@ -673,6 +694,213 @@ class MySupportImprover(Tool):
                 closest_face_id = face_id
 
         return closest_face_id, min_distance
+
+    def _autoDetectOverhangs(self, node: CuraSceneNode):
+        """Automatically detect overhangs and create support blockers"""
+        if not node or not node.getMeshData():
+            Logger.log("e", "No mesh data available for overhang detection")
+            return
+
+        try:
+            Logger.log("i", "=== AUTO OVERHANG DETECTION ===")
+
+            # Get transformed mesh data
+            mesh_data = node.getMeshData().getTransformed(node.getWorldTransformation())
+            vertices = mesh_data.getVertices()
+
+            # Handle non-indexed meshes
+            if not mesh_data.hasIndices():
+                Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
+                vertices, indices = self._rebuildIndexedMesh(vertices)
+            else:
+                indices = mesh_data.getIndices()
+
+            Logger.log("i", f"Mesh: {len(vertices)} vertices, {len(indices)} faces")
+
+            # Detect overhang faces
+            overhang_face_ids = self._detectOverhangFaces(vertices, indices, self._support_angle)
+            Logger.log("i", f"Found {len(overhang_face_ids)} overhang faces")
+
+            if len(overhang_face_ids) == 0:
+                Logger.log("i", "No overhangs detected")
+                return
+
+            # Find connected regions
+            regions = self._findConnectedRegions(vertices, indices, overhang_face_ids)
+            Logger.log("i", f"Found {len(regions)} connected overhang regions")
+
+            # Create support blockers for significant regions (more than 10 faces)
+            min_faces = 10
+            created_count = 0
+
+            for region_id, region_faces in enumerate(regions):
+                if len(region_faces) >= min_faces:
+                    # Calculate region center and bounds
+                    region_center, region_bounds = self._calculateRegionBounds(vertices, indices, region_faces)
+
+                    # Create a support blocker at the region center
+                    position = Vector(region_center[0], region_center[1], region_center[2])
+                    self._createModifierVolume(node, position)
+                    created_count += 1
+
+                    Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces)")
+
+            Logger.log("i", f"=== CREATED {created_count} SUPPORT BLOCKERS ===")
+
+        except Exception as e:
+            Logger.log("e", f"Failed to auto-detect overhangs: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
+    def _rebuildIndexedMesh(self, vertices):
+        """Rebuild index buffer for non-indexed mesh by merging duplicate vertices"""
+        Logger.log("i", f"Rebuilding indices from {len(vertices)} vertices...")
+
+        vertex_map = {}
+        unique_vertices = []
+        indices = []
+        tolerance = 1e-6
+
+        for i in range(0, len(vertices), 3):
+            triangle_indices = []
+            for j in range(3):
+                if i + j >= len(vertices):
+                    break
+                v = vertices[i + j]
+                v_key = tuple(numpy.round(v / tolerance) * tolerance)
+
+                if v_key in vertex_map:
+                    triangle_indices.append(vertex_map[v_key])
+                else:
+                    vertex_idx = len(unique_vertices)
+                    unique_vertices.append(v)
+                    vertex_map[v_key] = vertex_idx
+                    triangle_indices.append(vertex_idx)
+
+            if len(triangle_indices) == 3:
+                indices.append(triangle_indices)
+
+        unique_vertices = numpy.array(unique_vertices, dtype=numpy.float32)
+        indices = numpy.array(indices, dtype=numpy.int32)
+
+        reduction = 100 * (1 - len(unique_vertices)/len(vertices))
+        Logger.log("i", f"Vertex reduction: {reduction:.1f}% ({len(vertices)} → {len(unique_vertices)})")
+
+        return unique_vertices, indices
+
+    def _detectOverhangFaces(self, vertices, indices, threshold_angle):
+        """Detect faces that are overhangs based on angle threshold"""
+        threshold_rad = numpy.deg2rad(threshold_angle)
+        overhang_faces = []
+
+        for face_id, face in enumerate(indices):
+            # Get face vertices
+            v0 = vertices[face[0]]
+            v1 = vertices[face[1]]
+            v2 = vertices[face[2]]
+
+            # Calculate face normal
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            normal = numpy.cross(edge1, edge2)
+            normal_length = numpy.linalg.norm(normal)
+
+            if normal_length > 1e-10:
+                normal = normal / normal_length
+
+                # Calculate angle with up vector (0, 1, 0)
+                up_vector = numpy.array([0.0, 1.0, 0.0])
+                dot_product = numpy.dot(normal, up_vector)
+                angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+
+                # Check if angle exceeds threshold
+                if angle > threshold_rad:
+                    overhang_faces.append(face_id)
+
+        return numpy.array(overhang_faces, dtype=numpy.int32)
+
+    def _findConnectedRegions(self, vertices, indices, overhang_face_ids):
+        """Find connected regions of overhang faces using BFS"""
+        # Build adjacency graph
+        adjacency = {}
+        overhang_set = set(overhang_face_ids)
+
+        # Build edge to face mapping
+        edge_to_faces = {}
+        for face_id in overhang_face_ids:
+            face = indices[face_id]
+            edges = [
+                tuple(sorted([face[0], face[1]])),
+                tuple(sorted([face[1], face[2]])),
+                tuple(sorted([face[2], face[0]]))
+            ]
+
+            for edge in edges:
+                if edge not in edge_to_faces:
+                    edge_to_faces[edge] = []
+                edge_to_faces[edge].append(face_id)
+
+        # Build adjacency list
+        for edge, faces in edge_to_faces.items():
+            if len(faces) == 2:
+                f1, f2 = faces
+                if f1 not in adjacency:
+                    adjacency[f1] = []
+                if f2 not in adjacency:
+                    adjacency[f2] = []
+                adjacency[f1].append(f2)
+                adjacency[f2].append(f1)
+
+        # Find connected regions using BFS
+        visited = set()
+        regions = []
+
+        for start_face in overhang_face_ids:
+            if start_face in visited:
+                continue
+
+            # BFS to find connected component
+            region = []
+            queue = [start_face]
+            visited.add(start_face)
+
+            while queue:
+                current_face = queue.pop(0)
+                region.append(current_face)
+
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+            regions.append(region)
+
+        # Sort regions by size (largest first)
+        regions.sort(key=lambda r: len(r), reverse=True)
+
+        return regions
+
+    def _calculateRegionBounds(self, vertices, indices, region_face_ids):
+        """Calculate the center and bounds of a region"""
+        region_vertices = []
+
+        for face_id in region_face_ids:
+            face = indices[face_id]
+            region_vertices.extend([
+                vertices[face[0]],
+                vertices[face[1]],
+                vertices[face[2]]
+            ])
+
+        region_vertices = numpy.array(region_vertices)
+
+        # Calculate bounds
+        min_bounds = region_vertices.min(axis=0)
+        max_bounds = region_vertices.max(axis=0)
+        center = (min_bounds + max_bounds) / 2.0
+
+        return center, (min_bounds, max_bounds)
 
 
     def _load_presets(self):
