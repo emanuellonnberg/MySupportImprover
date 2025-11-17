@@ -238,7 +238,14 @@ class MySupportImprover(Tool):
             # AUTO-DETECT MODE: Automatically detect overhangs and create support blockers
             if self._auto_detect:
                 Logger.log("i", "Auto-detect mode active - detecting overhangs automatically")
-                self._autoDetectOverhangs(picked_node)
+
+                # Get the clicked position in 3D space to identify which region was clicked
+                active_camera = self._controller.getScene().getActiveCamera()
+                picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+                picking_pass.render()
+                picked_position = picking_pass.getPickedPosition(event.x, event.y)
+
+                self._autoDetectOverhangs(picked_node, picked_position)
                 return
 
             node_stack = picked_node.callDecoration("getStack")
@@ -694,8 +701,43 @@ class MySupportImprover(Tool):
 
         return closest_face_id, min_distance
 
-    def _autoDetectOverhangs(self, node: CuraSceneNode):
-        """Automatically detect overhangs and create support blockers"""
+    def _findClickedRegion(self, picked_position, regions, vertices_local, indices, world_transform):
+        """Find which overhang region contains the clicked position
+
+        Args:
+            picked_position: World-space position where user clicked
+            regions: List of overhang regions (each is a list of face IDs)
+            vertices_local: Vertex positions in local space
+            indices: Face indices
+            world_transform: Transformation to convert local to world space
+
+        Returns:
+            Region index if found, None otherwise
+        """
+        # Convert picked position to local space
+        inverse_transform = world_transform.getInverse()
+        picked_local = picked_position.preMultiply(inverse_transform)
+        picked_point = numpy.array([picked_local.x, picked_local.y, picked_local.z])
+
+        # Find closest face to clicked position
+        closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
+
+        Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
+
+        # Find which region contains this face
+        for region_id, region_faces in enumerate(regions):
+            if closest_face_id in region_faces:
+                return region_id
+
+        return None
+
+    def _autoDetectOverhangs(self, node: CuraSceneNode, picked_position: Vector = None):
+        """Automatically detect overhangs and create support blockers
+
+        Args:
+            node: The scene node to analyze
+            picked_position: Optional clicked position - if provided, only create blocker for clicked region
+        """
         if not node or not node.getMeshData():
             Logger.log("e", "No mesh data available for overhang detection")
             return
@@ -731,11 +773,24 @@ class MySupportImprover(Tool):
             regions = self._findConnectedRegions(vertices_local, indices, overhang_face_ids)
             Logger.log("i", f"Found {len(regions)} connected overhang regions")
 
-            # Create support blockers for significant regions (more than 10 faces)
+            # If clicked position provided, find which region was clicked
+            target_region_id = None
+            if picked_position:
+                target_region_id = self._findClickedRegion(picked_position, regions, vertices_local, indices, world_transform)
+                if target_region_id is not None:
+                    Logger.log("i", f"Clicked on region {target_region_id + 1} - will create blocker only for this region")
+                else:
+                    Logger.log("w", "Click position not in any overhang region - creating blockers for all regions")
+
+            # Create support blockers
             min_faces = 10
             created_count = 0
 
             for region_id, region_faces in enumerate(regions):
+                # If we have a target region, skip all others
+                if target_region_id is not None and region_id != target_region_id:
+                    continue
+
                 if len(region_faces) >= min_faces:
                     # Calculate region center and bounds in LOCAL space
                     region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
