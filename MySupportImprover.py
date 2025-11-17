@@ -54,9 +54,10 @@ class MySupportImprover(Tool):
         self._current_preset = "Medium"  # Add current preset tracking
         self._is_custom = False  # Track if using custom values
         self._export_mode = False  # Export mesh data mode
-        self._auto_detect = False  # Automatic overhang detection mode
+        self._auto_detect = False  # Automatic overhang detection mode (all regions)
+        self._single_region = False  # Single region mode (fast, one region only)
 
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode", "AutoDetect")
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode", "AutoDetect", "SingleRegion")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -185,12 +186,32 @@ class MySupportImprover(Tool):
         if value != self._auto_detect:
             self._auto_detect = value
             if value:
-                Logger.log("i", "Auto-detect mode ENABLED - click to detect overhangs automatically")
+                Logger.log("i", "Auto-detect mode ENABLED - click to detect all overhang regions")
+                # Disable single region mode
+                if self._single_region:
+                    self._single_region = False
             else:
-                Logger.log("i", "Auto-detect mode DISABLED - manual cube placement")
+                Logger.log("i", "Auto-detect mode DISABLED")
             self.propertyChanged.emit()
 
     AutoDetect = pyqtProperty(bool, fget=getAutoDetect, fset=setAutoDetect)
+
+    def getSingleRegion(self) -> bool:
+        return self._single_region
+
+    def setSingleRegion(self, value: bool) -> None:
+        if value != self._single_region:
+            self._single_region = value
+            if value:
+                Logger.log("i", "Single region mode ENABLED - click to detect one overhang region (fast)")
+                # Disable auto-detect mode
+                if self._auto_detect:
+                    self._auto_detect = False
+            else:
+                Logger.log("i", "Single region mode DISABLED")
+            self.propertyChanged.emit()
+
+    SingleRegion = pyqtProperty(bool, fget=getSingleRegion, fset=setSingleRegion)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -235,17 +256,30 @@ class MySupportImprover(Tool):
                 self._exportMeshData(picked_node, picked_position)
                 return
 
-            # AUTO-DETECT MODE: Automatically detect overhangs and create support blockers
-            if self._auto_detect:
-                Logger.log("i", "Auto-detect mode active - detecting overhangs automatically")
+            # SINGLE REGION MODE: Fast detection of one overhang region under click
+            if self._single_region:
+                Logger.log("i", "Single region mode active - detecting one overhang region (fast)")
 
-                # Get the clicked position in 3D space to identify which region was clicked
+                # Get the clicked position in 3D space
                 active_camera = self._controller.getScene().getActiveCamera()
                 picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
                 picking_pass.render()
                 picked_position = picking_pass.getPickedPosition(event.x, event.y)
 
-                self._autoDetectOverhangs(picked_node, picked_position)
+                self._detectSingleRegion(picked_node, picked_position)
+                return
+
+            # AUTO-DETECT MODE: Automatically detect all overhang regions
+            if self._auto_detect:
+                Logger.log("i", "Auto-detect mode active - detecting all overhang regions")
+
+                # Get the clicked position in 3D space (optional - for validation)
+                active_camera = self._controller.getScene().getActiveCamera()
+                picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+                picking_pass.render()
+                picked_position = picking_pass.getPickedPosition(event.x, event.y)
+
+                self._autoDetectOverhangs(picked_node, None)  # None = detect all regions
                 return
 
             node_stack = picked_node.callDecoration("getStack")
@@ -731,6 +765,91 @@ class MySupportImprover(Tool):
 
         return None
 
+    def _detectSingleRegion(self, node: CuraSceneNode, picked_position: Vector):
+        """Fast detection of a single overhang region under the click position
+
+        This is much faster than full auto-detect because it:
+        1. Only checks faces near the click
+        2. Only finds one connected region
+        3. Doesn't analyze the entire mesh
+        """
+        if not node or not node.getMeshData():
+            Logger.log("e", "No mesh data available for overhang detection")
+            return
+
+        try:
+            Logger.log("i", "=== SINGLE REGION DETECTION ===")
+
+            # Get mesh data in LOCAL space
+            mesh_data = node.getMeshData()
+            vertices_local = mesh_data.getVertices()
+            world_transform = node.getWorldTransformation()
+
+            # Handle non-indexed meshes
+            if not mesh_data.hasIndices():
+                Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
+                vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
+            else:
+                indices = mesh_data.getIndices()
+
+            Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
+
+            # Convert clicked position to local space
+            inverse_transform = world_transform.getInverse()
+            picked_local = picked_position.preMultiply(inverse_transform)
+            picked_point = numpy.array([picked_local.x, picked_local.y, picked_local.z])
+
+            # Find closest face to click
+            closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
+            Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
+
+            # Check if this face is an overhang
+            if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._support_angle, world_transform):
+                Logger.log("w", "Clicked face is not an overhang - no blocker created")
+                return
+
+            Logger.log("i", "Clicked face is an overhang - finding connected region...")
+
+            # Build adjacency graph for ALL faces (needed for BFS)
+            adjacency = self._buildAdjacencyGraph(indices)
+
+            # Do BFS from clicked face to find only overhang faces that are connected
+            region_faces = self._findConnectedOverhangRegion(
+                closest_face_id, vertices_local, indices, adjacency,
+                self._support_angle, world_transform
+            )
+
+            Logger.log("i", f"Found connected overhang region with {len(region_faces)} faces")
+
+            if len(region_faces) < 10:
+                Logger.log("w", f"Region too small ({len(region_faces)} faces) - no blocker created")
+                return
+
+            # Calculate region bounds and create blocker
+            region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
+            min_bounds, max_bounds = region_bounds
+
+            # Calculate dimensions with padding
+            region_size = max_bounds - min_bounds
+            padding_factor = 1.4
+            padded_size_x = max(1.0, float(region_size[0] * padding_factor))
+            padded_size_y = max(1.0, float(region_size[1] * padding_factor))
+            padded_size_z = max(1.0, float(region_size[2] * padding_factor))
+
+            # Transform to world space
+            center_local_vec = Vector(region_center_local[0], region_center_local[1], region_center_local[2])
+            center_world = center_local_vec.preMultiply(world_transform)
+
+            # Create blocker
+            self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
+
+            Logger.log("i", f"Created support blocker for region ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
+
+        except Exception as e:
+            Logger.log("e", f"Failed to detect single region: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
     def _autoDetectOverhangs(self, node: CuraSceneNode, picked_position: Vector = None):
         """Automatically detect overhangs and create support blockers
 
@@ -862,6 +981,99 @@ class MySupportImprover(Tool):
         Logger.log("i", f"Vertex reduction: {reduction:.1f}% ({len(vertices)} → {len(unique_vertices)})")
 
         return unique_vertices, indices
+
+    def _isFaceOverhang(self, vertices, indices, face_id, threshold_angle, transform=None):
+        """Check if a single face is an overhang"""
+        face = indices[face_id]
+        v0 = vertices[face[0]]
+        v1 = vertices[face[1]]
+        v2 = vertices[face[2]]
+
+        # Calculate normal
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal_local = numpy.cross(edge1, edge2)
+        normal_length = numpy.linalg.norm(normal_local)
+
+        if normal_length < 1e-10:
+            return False
+
+        normal_local = normal_local / normal_length
+
+        # Transform to world space if needed
+        if transform:
+            transform_data = transform.getData()
+            rotation_matrix = transform_data[0:3, 0:3]
+            normal_world = rotation_matrix.dot(normal_local)
+            normal_world_length = numpy.linalg.norm(normal_world)
+            if normal_world_length > 1e-10:
+                normal = normal_world / normal_world_length
+            else:
+                normal = normal_local
+        else:
+            normal = normal_local
+
+        # Check angle
+        threshold_from_up = 90.0 + threshold_angle
+        threshold_rad = numpy.deg2rad(threshold_from_up)
+        up_vector = numpy.array([0.0, 1.0, 0.0])
+        dot_product = numpy.dot(normal, up_vector)
+        angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+
+        return angle > threshold_rad
+
+    def _buildAdjacencyGraph(self, indices):
+        """Build adjacency graph for ALL faces (not just overhangs)"""
+        edge_to_faces = {}
+
+        for face_id, face in enumerate(indices):
+            edges = [
+                tuple(sorted([face[0], face[1]])),
+                tuple(sorted([face[1], face[2]])),
+                tuple(sorted([face[2], face[0]]))
+            ]
+
+            for edge in edges:
+                if edge not in edge_to_faces:
+                    edge_to_faces[edge] = []
+                edge_to_faces[edge].append(face_id)
+
+        # Build adjacency list
+        adjacency = {}
+        for edge, faces in edge_to_faces.items():
+            if len(faces) == 2:
+                f1, f2 = faces
+                if f1 not in adjacency:
+                    adjacency[f1] = []
+                if f2 not in adjacency:
+                    adjacency[f2] = []
+                adjacency[f1].append(f2)
+                adjacency[f2].append(f1)
+
+        return adjacency
+
+    def _findConnectedOverhangRegion(self, start_face_id, vertices, indices, adjacency, threshold_angle, transform):
+        """Find connected overhang region starting from a specific face using BFS"""
+        region = []
+        visited = set()
+        queue = [start_face_id]
+        visited.add(start_face_id)
+
+        while queue:
+            current_face = queue.pop(0)
+
+            # Check if current face is an overhang
+            if self._isFaceOverhang(vertices, indices, current_face, threshold_angle, transform):
+                region.append(current_face)
+
+                # Check neighbors
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+        return region
 
     def _detectOverhangFaces(self, vertices, indices, threshold_angle, transform=None):
         """Detect faces that are overhangs based on angle threshold

@@ -132,7 +132,61 @@ Item {
             }
         }
 
-        // Auto Detect Mode Checkbox
+        // Single Region Mode Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: singleRegionCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SingleRegion") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("SingleRegion", checked)
+                        // Disable other modes when single region is enabled
+                        if (checked) {
+                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                UM.ActiveTool.setProperty("AutoDetect", false)
+                            }
+                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                UM.ActiveTool.setProperty("ExportMode", false)
+                            }
+                        }
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: singleRegionCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: singleRegionCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: singleRegionCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Single Region (Fast)")
+                    font: UM.Theme.getFont("default")
+                    color: singleRegionCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: singleRegionCheckbox.indicator.width + singleRegionCheckbox.spacing
+                }
+            }
+        }
+
+        // Auto Detect All Regions Checkbox
         Row {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
 
@@ -143,9 +197,14 @@ Item {
                 onToggled: {
                     if (UM.ActiveTool) {
                         UM.ActiveTool.setProperty("AutoDetect", checked)
-                        // Disable export mode when auto-detect is enabled
-                        if (checked && UM.ActiveTool.properties.getValue("ExportMode")) {
-                            UM.ActiveTool.setProperty("ExportMode", false)
+                        // Disable other modes when auto-detect is enabled
+                        if (checked) {
+                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                UM.ActiveTool.setProperty("SingleRegion", false)
+                            }
+                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                UM.ActiveTool.setProperty("ExportMode", false)
+                            }
                         }
                     }
                 }
@@ -172,7 +231,7 @@ Item {
                 }
 
                 contentItem: Label {
-                    text: catalog.i18nc("@label", "Auto-Detect Overhangs")
+                    text: catalog.i18nc("@label", "Auto-Detect All Regions")
                     font: UM.Theme.getFont("default")
                     color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
                     verticalAlignment: Text.AlignVCenter
@@ -192,9 +251,14 @@ Item {
                 onToggled: {
                     if (UM.ActiveTool) {
                         UM.ActiveTool.setProperty("ExportMode", checked)
-                        // Disable auto-detect when export mode is enabled
-                        if (checked && UM.ActiveTool.properties.getValue("AutoDetect")) {
-                            UM.ActiveTool.setProperty("AutoDetect", false)
+                        // Disable other modes when export mode is enabled
+                        if (checked) {
+                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                UM.ActiveTool.setProperty("AutoDetect", false)
+                            }
+                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                UM.ActiveTool.setProperty("SingleRegion", false)
+                            }
                         }
                     }
                 }
