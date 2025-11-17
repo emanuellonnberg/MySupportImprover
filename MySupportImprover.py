@@ -822,15 +822,17 @@ class MySupportImprover(Tool):
 
                 # Transform normal to world space if transform is provided
                 if transform:
-                    # Convert numpy array to Vector for transformation
-                    normal_vec = Vector(normal_local[0], normal_local[1], normal_local[2])
-                    # Transform the normal (rotation only - translation doesn't affect direction vectors)
-                    normal_world = normal_vec.preMultiply(transform)
+                    # Get rotation matrix (3x3 upper-left of 4x4 transform matrix)
+                    transform_data = transform.getData()
+                    rotation_matrix = transform_data[0:3, 0:3]
+
+                    # Apply rotation to normal (normals are direction vectors - no translation)
+                    normal_world = rotation_matrix.dot(normal_local)
+
                     # Normalize after transformation
-                    normal_world_length = normal_world.length()
+                    normal_world_length = numpy.linalg.norm(normal_world)
                     if normal_world_length > 1e-10:
-                        normal_world = normal_world.normalized()
-                        normal = numpy.array([normal_world.x, normal_world.y, normal_world.z])
+                        normal = normal_world / normal_world_length
                     else:
                         normal = normal_local
                 else:
