@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- Support structure shape -->
+  <path d="M4 20h16v-4L12 8 4 16v4z" fill="#808080" stroke="#404040" stroke-width="1"/>
+  <!-- Improvement indicator -->
+  <path d="M12 3l4 4h-8z" fill="#4CAF50" stroke="#2E7D32" stroke-width="1"/>
+</svg> 
