@@ -738,17 +738,18 @@ class MySupportImprover(Tool):
 
             for region_id, region_faces in enumerate(regions):
                 if len(region_faces) >= min_faces:
-                    # Calculate region center and bounds (in LOCAL space - vertices are already local)
-                    region_center, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
+                    # Calculate region center in LOCAL space
+                    region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
 
-                    # Position is already in local space, use directly
-                    local_position = Vector(region_center[0], region_center[1], region_center[2])
+                    # Transform region center to WORLD space (like manual click positions)
+                    center_local_vec = Vector(region_center_local[0], region_center_local[1], region_center_local[2])
+                    center_world = center_local_vec.preMultiply(world_transform)
 
-                    # Create a support blocker at the region center (in local space)
-                    self._createModifierVolume(node, local_position)
+                    # Create a support blocker at the region center (in world space)
+                    self._createModifierVolume(node, center_world)
                     created_count += 1
 
-                    Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces) at local pos: [{local_position.x:.2f}, {local_position.y:.2f}, {local_position.z:.2f}]")
+                    Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}]")
 
             Logger.log("i", f"=== CREATED {created_count} SUPPORT BLOCKERS ===")
 
