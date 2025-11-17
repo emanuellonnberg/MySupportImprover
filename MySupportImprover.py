@@ -704,21 +704,24 @@ class MySupportImprover(Tool):
         try:
             Logger.log("i", "=== AUTO OVERHANG DETECTION ===")
 
-            # Get transformed mesh data
-            mesh_data = node.getMeshData().getTransformed(node.getWorldTransformation())
-            vertices = mesh_data.getVertices()
+            # Get mesh data in LOCAL space (not transformed)
+            mesh_data = node.getMeshData()
+            vertices_local = mesh_data.getVertices()
+
+            # Get transformation matrix to transform normals to world space for overhang detection
+            world_transform = node.getWorldTransformation()
 
             # Handle non-indexed meshes
             if not mesh_data.hasIndices():
                 Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
-                vertices, indices = self._rebuildIndexedMesh(vertices)
+                vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
             else:
                 indices = mesh_data.getIndices()
 
-            Logger.log("i", f"Mesh: {len(vertices)} vertices, {len(indices)} faces")
+            Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
 
-            # Detect overhang faces
-            overhang_face_ids = self._detectOverhangFaces(vertices, indices, self._support_angle)
+            # Detect overhang faces (pass transformation to handle rotation)
+            overhang_face_ids = self._detectOverhangFaces(vertices_local, indices, self._support_angle, world_transform)
             Logger.log("i", f"Found {len(overhang_face_ids)} overhang faces")
 
             if len(overhang_face_ids) == 0:
@@ -726,7 +729,7 @@ class MySupportImprover(Tool):
                 return
 
             # Find connected regions
-            regions = self._findConnectedRegions(vertices, indices, overhang_face_ids)
+            regions = self._findConnectedRegions(vertices_local, indices, overhang_face_ids)
             Logger.log("i", f"Found {len(regions)} connected overhang regions")
 
             # Create support blockers for significant regions (more than 10 faces)
@@ -735,16 +738,11 @@ class MySupportImprover(Tool):
 
             for region_id, region_faces in enumerate(regions):
                 if len(region_faces) >= min_faces:
-                    # Calculate region center and bounds (in world space)
-                    region_center, region_bounds = self._calculateRegionBounds(vertices, indices, region_faces)
+                    # Calculate region center and bounds (in LOCAL space - vertices are already local)
+                    region_center, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
 
-                    # Convert world space position to parent's local space
-                    world_position = Vector(region_center[0], region_center[1], region_center[2])
-
-                    # Get inverse of parent's transformation to convert world->local
-                    parent_transform = node.getWorldTransformation()
-                    inverse_transform = parent_transform.getInverse()
-                    local_position = world_position.preMultiply(inverse_transform)
+                    # Position is already in local space, use directly
+                    local_position = Vector(region_center[0], region_center[1], region_center[2])
 
                     # Create a support blocker at the region center (in local space)
                     self._createModifierVolume(node, local_position)
@@ -795,27 +793,50 @@ class MySupportImprover(Tool):
 
         return unique_vertices, indices
 
-    def _detectOverhangFaces(self, vertices, indices, threshold_angle):
-        """Detect faces that are overhangs based on angle threshold"""
+    def _detectOverhangFaces(self, vertices, indices, threshold_angle, transform=None):
+        """Detect faces that are overhangs based on angle threshold
+
+        Args:
+            vertices: Vertex positions (in local space if transform is provided)
+            indices: Face indices
+            threshold_angle: Angle threshold in degrees
+            transform: Optional transformation matrix to convert normals to world space
+        """
         threshold_rad = numpy.deg2rad(threshold_angle)
         overhang_faces = []
 
         for face_id, face in enumerate(indices):
-            # Get face vertices
+            # Get face vertices (in local space)
             v0 = vertices[face[0]]
             v1 = vertices[face[1]]
             v2 = vertices[face[2]]
 
-            # Calculate face normal
+            # Calculate face normal (in local space)
             edge1 = v1 - v0
             edge2 = v2 - v0
-            normal = numpy.cross(edge1, edge2)
-            normal_length = numpy.linalg.norm(normal)
+            normal_local = numpy.cross(edge1, edge2)
+            normal_length = numpy.linalg.norm(normal_local)
 
             if normal_length > 1e-10:
-                normal = normal / normal_length
+                normal_local = normal_local / normal_length
 
-                # Calculate angle with up vector (0, 1, 0)
+                # Transform normal to world space if transform is provided
+                if transform:
+                    # Convert numpy array to Vector for transformation
+                    normal_vec = Vector(normal_local[0], normal_local[1], normal_local[2])
+                    # Transform the normal (use normal transformation, not position transformation)
+                    normal_world = normal_vec.preMultiply(transform.getData()[0:3, 0:3])
+                    # Normalize after transformation
+                    normal_world_length = normal_world.length()
+                    if normal_world_length > 1e-10:
+                        normal_world = normal_world.normalized()
+                        normal = numpy.array([normal_world.x, normal_world.y, normal_world.z])
+                    else:
+                        normal = normal_local
+                else:
+                    normal = normal_local
+
+                # Calculate angle with up vector (0, 1, 0) in world space
                 up_vector = numpy.array([0.0, 1.0, 0.0])
                 dot_product = numpy.dot(normal, up_vector)
                 angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
