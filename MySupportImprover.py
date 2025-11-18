@@ -56,8 +56,9 @@ class MySupportImprover(Tool):
         self._export_mode = False  # Export mesh data mode
         self._auto_detect = False  # Automatic overhang detection mode (all regions)
         self._single_region = False  # Single region mode (fast, one region only)
+        self._detect_sharp_features = False  # Sharp feature detection mode (for pointy things)
 
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode", "AutoDetect", "SingleRegion")
+        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom", "ExportMode", "AutoDetect", "SingleRegion", "DetectSharpFeatures")
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -212,6 +213,20 @@ class MySupportImprover(Tool):
             self.propertyChanged.emit()
 
     SingleRegion = pyqtProperty(bool, fget=getSingleRegion, fset=setSingleRegion)
+
+    def getDetectSharpFeatures(self) -> bool:
+        return self._detect_sharp_features
+
+    def setDetectSharpFeatures(self, value: bool) -> None:
+        if value != self._detect_sharp_features:
+            self._detect_sharp_features = value
+            if value:
+                Logger.log("i", "Sharp feature detection ENABLED - will detect pointy features that need support")
+            else:
+                Logger.log("i", "Sharp feature detection DISABLED")
+            self.propertyChanged.emit()
+
+    DetectSharpFeatures = pyqtProperty(bool, fget=getDetectSharpFeatures, fset=setDetectSharpFeatures)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -907,6 +922,16 @@ class MySupportImprover(Tool):
             regions = self._findConnectedRegions(vertices_local, indices, overhang_face_ids)
             Logger.log("i", f"Found {len(regions)} connected overhang regions")
 
+            # Apply sharp feature detection if enabled
+            if self._detect_sharp_features:
+                Logger.log("i", "Sharp feature detection enabled - analyzing vertex curvature...")
+                sharp_vertices = self._detectSharpVertices(vertices_local, indices, curvature_threshold=2.0)
+                if len(sharp_vertices) > 0:
+                    Logger.log("i", f"Detected {len(sharp_vertices)} sharp vertices - expanding regions...")
+                    regions = self._expandRegionsWithSharpFeatures(vertices_local, indices, regions,
+                                                                   sharp_vertices, expansion_radius=5.0)
+                    Logger.log("i", f"After sharp feature expansion: {len(regions)} total regions")
+
             # If clicked position provided, find which region was clicked
             target_region_id = None
             if picked_position:
@@ -1366,6 +1391,163 @@ class MySupportImprover(Tool):
 
         return center, (min_bounds, max_bounds)
 
+    def _detectSharpVertices(self, vertices, indices, curvature_threshold=2.0):
+        """Detect vertices with high curvature (sharp points)
+
+        Calculates curvature at each vertex by analyzing the angles between
+        adjacent face normals. High curvature indicates sharp features like
+        cone tips, pyramid points, or spear-like shapes.
+
+        Args:
+            vertices: Vertex positions in local space
+            indices: Face indices
+            curvature_threshold: Threshold for considering a vertex "sharp" (radians)
+                                Higher values = only very sharp points detected
+                                Default 2.0 radians (~115°) catches moderately sharp features
+
+        Returns:
+            List of vertex IDs that are sharp points
+        """
+        # Build vertex-to-faces mapping
+        vertex_faces = {}
+        for face_id, face in enumerate(indices):
+            for vertex_id in face:
+                if vertex_id not in vertex_faces:
+                    vertex_faces[vertex_id] = []
+                vertex_faces[vertex_id].append(face_id)
+
+        sharp_vertices = []
+
+        # Calculate curvature at each vertex
+        for vertex_id, face_list in vertex_faces.items():
+            if len(face_list) < 3:
+                # Need at least 3 faces to meaningfully calculate curvature
+                continue
+
+            # Calculate normals for all faces touching this vertex
+            normals = []
+            for face_id in face_list:
+                face = indices[face_id]
+                v0 = vertices[face[0]]
+                v1 = vertices[face[1]]
+                v2 = vertices[face[2]]
+
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = numpy.cross(edge1, edge2)
+                normal_length = numpy.linalg.norm(normal)
+
+                if normal_length > 1e-10:
+                    normal = normal / normal_length
+                    normals.append(normal)
+
+            if len(normals) < 3:
+                continue
+
+            # Calculate maximum angle variation between normals
+            max_angle_variation = 0.0
+            for i in range(len(normals)):
+                for j in range(i + 1, len(normals)):
+                    dot_product = numpy.dot(normals[i], normals[j])
+                    angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+                    max_angle_variation = max(max_angle_variation, angle)
+
+            # If angle variation is high, this is a sharp vertex
+            if max_angle_variation > curvature_threshold:
+                sharp_vertices.append(vertex_id)
+
+        Logger.log("d", f"Detected {len(sharp_vertices)} sharp vertices with curvature > {curvature_threshold:.2f} rad")
+        return sharp_vertices
+
+    def _expandRegionsWithSharpFeatures(self, vertices, indices, regions, sharp_vertices, expansion_radius=5.0):
+        """Expand overhang regions to include faces around sharp vertices
+
+        When sharp features are detected (like cone tips), include nearby faces
+        in the overhang region even if they don't meet the strict angle threshold.
+
+        Args:
+            vertices: Vertex positions in local space
+            indices: Face indices
+            regions: List of overhang regions (each is a list of face IDs)
+            sharp_vertices: List of sharp vertex IDs
+            expansion_radius: Radius (mm) around sharp vertex to include faces
+
+        Returns:
+            Modified list of regions with additional faces around sharp vertices
+        """
+        if len(sharp_vertices) == 0:
+            return regions
+
+        # Build vertex-to-faces mapping
+        vertex_faces = {}
+        for face_id, face in enumerate(indices):
+            for vertex_id in face:
+                if vertex_id not in vertex_faces:
+                    vertex_faces[vertex_id] = []
+                vertex_faces[vertex_id].append(face_id)
+
+        # For each sharp vertex, find nearby faces
+        sharp_feature_faces = set()
+        for vertex_id in sharp_vertices:
+            sharp_vertex_pos = vertices[vertex_id]
+
+            # Find all faces within expansion_radius of this sharp vertex
+            for face_id, face in enumerate(indices):
+                # Get face center
+                v0 = vertices[face[0]]
+                v1 = vertices[face[1]]
+                v2 = vertices[face[2]]
+                face_center = (v0 + v1 + v2) / 3.0
+
+                # Check distance to sharp vertex
+                distance = numpy.linalg.norm(face_center - sharp_vertex_pos)
+                if distance < expansion_radius:
+                    sharp_feature_faces.add(face_id)
+
+        Logger.log("i", f"Found {len(sharp_feature_faces)} faces near sharp vertices")
+
+        # Create new regions from sharp feature faces if they're not already in existing regions
+        existing_face_set = set()
+        for region in regions:
+            existing_face_set.update(region)
+
+        # Add unclaimed sharp feature faces as new regions
+        unclaimed_sharp_faces = sharp_feature_faces - existing_face_set
+        if len(unclaimed_sharp_faces) > 0:
+            # Use BFS to find connected components of sharp feature faces
+            visited = set()
+            new_regions = []
+
+            for start_face in unclaimed_sharp_faces:
+                if start_face in visited:
+                    continue
+
+                # Build adjacency for sharp feature faces only
+                adjacency = self._buildAdjacencyGraph(indices)
+
+                # BFS to find connected sharp feature faces
+                region = []
+                queue = [start_face]
+                visited.add(start_face)
+
+                while queue:
+                    current_face = queue.pop(0)
+                    if current_face in unclaimed_sharp_faces:
+                        region.append(current_face)
+
+                        if current_face in adjacency:
+                            for neighbor in adjacency[current_face]:
+                                if neighbor not in visited and neighbor in unclaimed_sharp_faces:
+                                    visited.add(neighbor)
+                                    queue.append(neighbor)
+
+                if len(region) >= 5:  # Minimum faces for a sharp feature region
+                    new_regions.append(region)
+                    Logger.log("i", f"Created new sharp feature region with {len(region)} faces")
+
+            regions.extend(new_regions)
+
+        return regions
 
     def _load_presets(self):
         """Load presets from the presets.json file."""

@@ -240,6 +240,51 @@ Item {
             }
         }
 
+        // Sharp Feature Detection Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: sharpFeaturesCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectSharpFeatures") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("DetectSharpFeatures", checked)
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: sharpFeaturesCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: sharpFeaturesCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: sharpFeaturesCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Detect Sharp Features (auto-detect mode)")
+                    font: UM.Theme.getFont("default")
+                    color: sharpFeaturesCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: sharpFeaturesCheckbox.indicator.width + sharpFeaturesCheckbox.spacing
+                }
+            }
+        }
+
         // Export Mode Checkbox
         Row {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
