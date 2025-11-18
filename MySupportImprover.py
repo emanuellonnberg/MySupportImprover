@@ -812,9 +812,10 @@ class MySupportImprover(Tool):
             if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._support_angle, world_transform):
                 Logger.log("i", "Clicked face is not an overhang - searching nearby for overhang faces...")
 
-                # Search nearby faces (BFS up to 3 levels deep) for an overhang
+                # Search nearby faces (BFS up to 20 levels deep) for an overhang
+                # This helps find overhangs even when clicking on non-overhang faces of a dangling feature
                 start_face_id = self._findNearbyOverhang(closest_face_id, vertices_local, indices, adjacency,
-                                                         self._support_angle, world_transform, max_depth=3)
+                                                         self._support_angle, world_transform, max_depth=20)
 
                 if start_face_id is None:
                     Logger.log("w", "No overhang faces found near click position - no blocker created")
@@ -824,12 +825,13 @@ class MySupportImprover(Tool):
             else:
                 Logger.log("i", "Clicked face is an overhang")
 
-            Logger.log("i", "Finding connected overhang region...")
+            Logger.log("i", "Finding connected overhang region (including near-threshold faces)...")
 
-            # Do BFS from start face to find only overhang faces that are connected
-            region_faces = self._findConnectedOverhangRegion(
+            # Do BFS from start face to find overhang faces AND near-threshold faces
+            # This captures the entire dangling feature, not just the strict overhangs
+            region_faces = self._findConnectedOverhangRegionExpanded(
                 start_face_id, vertices_local, indices, adjacency,
-                self._support_angle, world_transform
+                self._support_angle, world_transform, angle_margin=10.0
             )
 
             Logger.log("i", f"Found connected overhang region with {len(region_faces)} faces")
@@ -1118,6 +1120,108 @@ class MySupportImprover(Tool):
                             queue.append(neighbor)
 
         return region
+
+    def _findConnectedOverhangRegionExpanded(self, start_face_id, vertices, indices, adjacency,
+                                            threshold_angle, transform, angle_margin=10.0):
+        """Find connected overhang region including near-threshold faces
+
+        This is used for single-region mode to capture entire dangling features.
+        It includes faces that are within angle_margin degrees of the support angle threshold,
+        allowing it to capture complete features even when some faces are slightly above
+        the strict overhang threshold.
+
+        Args:
+            start_face_id: Face to start BFS from
+            vertices: Vertex positions in local space
+            indices: Face indices
+            adjacency: Face adjacency graph
+            threshold_angle: Base support angle (e.g., 45°)
+            transform: World transformation for normal rotation
+            angle_margin: Degrees to expand beyond strict threshold (default 10°)
+
+        Returns:
+            List of face IDs forming the complete dangling feature
+        """
+        # Calculate expanded threshold
+        # Normal threshold: 90 + 45 = 135° from up
+        # With 10° margin: also include faces 125°-135° from up
+        expanded_threshold = threshold_angle - angle_margin
+
+        region = []
+        visited = set()
+        queue = [start_face_id]
+        visited.add(start_face_id)
+
+        while queue:
+            current_face = queue.pop(0)
+
+            # Check if face is overhang OR near-threshold (with expanded threshold)
+            if self._isFaceNearOverhang(vertices, indices, current_face, expanded_threshold, transform):
+                region.append(current_face)
+
+                # Expand to neighbors
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+        return region
+
+    def _isFaceNearOverhang(self, vertices, indices, face_id, threshold_angle, transform=None):
+        """Check if a face is at or near overhang threshold
+
+        This uses a relaxed threshold to include faces that are close to needing support,
+        helping to capture entire dangling features rather than just strict overhangs.
+
+        Args:
+            vertices: Vertex positions in local space
+            indices: Face indices
+            face_id: Face to check
+            threshold_angle: Relaxed support angle (already reduced by angle_margin)
+            transform: Optional transformation matrix to convert normals to world space
+
+        Returns:
+            True if face angle exceeds the relaxed threshold
+        """
+        face = indices[face_id]
+        v0 = vertices[face[0]]
+        v1 = vertices[face[1]]
+        v2 = vertices[face[2]]
+
+        # Calculate normal in local space
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal_local = numpy.cross(edge1, edge2)
+        normal_length = numpy.linalg.norm(normal_local)
+
+        if normal_length < 1e-10:
+            return False
+
+        normal_local = normal_local / normal_length
+
+        # Transform to world space if needed
+        if transform:
+            transform_data = transform.getData()
+            rotation_matrix = transform_data[0:3, 0:3]
+            normal_world = rotation_matrix.dot(normal_local)
+            normal_world_length = numpy.linalg.norm(normal_world)
+            if normal_world_length > 1e-10:
+                normal = normal_world / normal_world_length
+            else:
+                normal = normal_local
+        else:
+            normal = normal_local
+
+        # Check angle against relaxed threshold
+        # Note: threshold_angle passed here is already (base_threshold - margin)
+        threshold_from_up = 90.0 + threshold_angle
+        threshold_rad = numpy.deg2rad(threshold_from_up)
+        up_vector = numpy.array([0.0, 1.0, 0.0])
+        dot_product = numpy.dot(normal, up_vector)
+        angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+
+        return angle > threshold_rad
 
     def _detectOverhangFaces(self, vertices, indices, threshold_angle, transform=None):
         """Detect faces that are overhangs based on angle threshold
