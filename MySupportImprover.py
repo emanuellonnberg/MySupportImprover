@@ -866,14 +866,22 @@ class MySupportImprover(Tool):
             padded_size_y = max(1.0, float(region_size[1] * padding_factor))
             padded_size_z = max(1.0, float(region_size[2] * padding_factor))
 
+            # Position volume so its TOP is at the highest point of the region
+            # This ensures the dangling part only intersects the top of the volume
+            # Volume position is at its center, so: center_y = max_y - size_y/2
+            position_local_x = (min_bounds[0] + max_bounds[0]) / 2.0  # Center in X
+            position_local_y = max_bounds[1] - (padded_size_y / 2.0)  # Top at max Y
+            position_local_z = (min_bounds[2] + max_bounds[2]) / 2.0  # Center in Z
+
             # Transform to world space
-            center_local_vec = Vector(region_center_local[0], region_center_local[1], region_center_local[2])
-            center_world = center_local_vec.preMultiply(world_transform)
+            position_local_vec = Vector(position_local_x, position_local_y, position_local_z)
+            position_world = position_local_vec.preMultiply(world_transform)
 
             # Create blocker
-            self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
+            self._createModifierVolumeWithSize(node, position_world, padded_size_x, padded_size_y, padded_size_z)
 
-            Logger.log("i", f"Created support blocker for region ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
+            Logger.log("i", f"Created support blocker for region ({len(region_faces)} faces) at world pos: [{position_world.x:.2f}, {position_world.y:.2f}, {position_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
+            Logger.log("d", f"Region bounds: min_y={min_bounds[1]:.2f}, max_y={max_bounds[1]:.2f}, volume top at y={max_bounds[1]:.2f}")
 
         except Exception as e:
             Logger.log("e", f"Failed to detect single region: {e}")
@@ -1394,9 +1402,8 @@ class MySupportImprover(Tool):
     def _detectSharpVertices(self, vertices, indices, curvature_threshold=2.0):
         """Detect vertices with high curvature (sharp points)
 
-        Calculates curvature at each vertex by analyzing the angles between
-        adjacent face normals. High curvature indicates sharp features like
-        cone tips, pyramid points, or spear-like shapes.
+        Optimized version that uses average normal deviation instead of pairwise comparison.
+        Much faster on large meshes.
 
         Args:
             vertices: Vertex positions in local space
@@ -1417,12 +1424,14 @@ class MySupportImprover(Tool):
                 vertex_faces[vertex_id].append(face_id)
 
         sharp_vertices = []
+        checked_count = 0
 
-        # Calculate curvature at each vertex
+        # Calculate curvature at each vertex (optimized version)
         for vertex_id, face_list in vertex_faces.items():
             if len(face_list) < 3:
-                # Need at least 3 faces to meaningfully calculate curvature
                 continue
+
+            checked_count += 1
 
             # Calculate normals for all faces touching this vertex
             normals = []
@@ -1444,19 +1453,27 @@ class MySupportImprover(Tool):
             if len(normals) < 3:
                 continue
 
-            # Calculate maximum angle variation between normals
-            max_angle_variation = 0.0
-            for i in range(len(normals)):
-                for j in range(i + 1, len(normals)):
-                    dot_product = numpy.dot(normals[i], normals[j])
+            # OPTIMIZED: Calculate average normal, then find max deviation
+            # This is O(n) instead of O(n²)
+            normals_array = numpy.array(normals)
+            avg_normal = numpy.mean(normals_array, axis=0)
+            avg_normal_length = numpy.linalg.norm(avg_normal)
+
+            if avg_normal_length > 1e-10:
+                avg_normal = avg_normal / avg_normal_length
+
+                # Find maximum deviation from average
+                max_deviation = 0.0
+                for normal in normals:
+                    dot_product = numpy.dot(normal, avg_normal)
                     angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
-                    max_angle_variation = max(max_angle_variation, angle)
+                    max_deviation = max(max_deviation, angle)
 
-            # If angle variation is high, this is a sharp vertex
-            if max_angle_variation > curvature_threshold:
-                sharp_vertices.append(vertex_id)
+                # Sharp vertex if normals deviate significantly from average
+                if max_deviation > curvature_threshold / 2.0:  # Divide by 2 since we're comparing to average
+                    sharp_vertices.append(vertex_id)
 
-        Logger.log("d", f"Detected {len(sharp_vertices)} sharp vertices with curvature > {curvature_threshold:.2f} rad")
+        Logger.log("i", f"Checked {checked_count} vertices, detected {len(sharp_vertices)} sharp vertices")
         return sharp_vertices
 
     def _expandRegionsWithSharpFeatures(self, vertices, indices, regions, sharp_vertices, expansion_radius=5.0):
