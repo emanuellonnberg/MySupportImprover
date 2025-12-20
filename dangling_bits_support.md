@@ -196,19 +196,77 @@ def find_boundary_edges(overhang_region, adjacency, overhang_mask):
     return boundary_edges
 ```
 
-## Cura Support Settings Reference
+## Leveraging Cura's Settings
 
-Relevant settings for "minimal" edge support:
+The key insight is that Cura's existing support settings can be configured very differently for structural vs stability support. By using multiple `cutting_mesh` modifier volumes with different settings, we can achieve differentiated support without generating custom geometry.
 
-| Setting | Purpose | Minimal Value |
-|---------|---------|---------------|
-| `support_pattern` | Fill pattern | `lines` (thinnest) |
-| `support_infill_rate` | Density % | 5-10% |
-| `support_line_width` | Line thickness | 0.2-0.3mm |
-| `support_wall_count` | Perimeter walls | 1 |
-| `support_z_distance` | Vertical gap | 0.2-0.3mm |
-| `support_xy_distance` | Horizontal gap | 0.5-1.0mm |
-| `support_interface_enable` | Dense top layer | False (for minimal) |
+### Structural Support Settings (Under Tip)
+
+Standard robust support configuration:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `support_pattern` | `grid` or `zigzag` | Strong cross-linked structure |
+| `support_infill_rate` | 15-20% | Adequate density for load |
+| `support_line_width` | 0.4mm | Standard line width |
+| `support_wall_count` | 0-1 | Optional perimeter |
+| `support_z_distance` | 0.2mm | Normal gap for removal |
+| `support_interface_enable` | True | Dense top for clean surface |
+| `support_interface_density` | 80-100% | Solid contact layer |
+
+### Stability Support Settings (Edge Rails)
+
+Minimal configuration for side stabilization:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `support_pattern` | `lines` | Thinnest possible pattern |
+| `support_infill_rate` | 5-10% | Very sparse - just enough contact |
+| `support_line_width` | 0.2-0.3mm | Thinner than normal |
+| `support_wall_count` | 1 | Single thin wall along edge |
+| `support_z_distance` | 0.15-0.2mm | Can be slightly closer |
+| `support_xy_distance` | 0.2-0.4mm | Close to edge for stability |
+| `support_interface_enable` | False | No dense layer needed |
+| `support_roof_enable` | False | Skip roof entirely |
+| `support_bottom_enable` | False | Skip floor for easy removal |
+
+### Key Settings Combinations
+
+**"Wall Only" Support (Maximum Minimal)**
+```
+support_wall_count = 1
+support_infill_rate = 0
+support_pattern = lines
+```
+This creates just a thin perimeter wall with no infill - essentially a hollow shell that stabilizes without bulk.
+
+**"Single Line" Support**
+```
+support_pattern = lines
+support_line_distance = 999  (very large)
+support_wall_count = 0
+```
+This attempts to create just individual support lines rather than a filled area.
+
+### Settings Available via Cutting Mesh
+
+The plugin currently injects these settings into cutting meshes:
+- `support_z_distance`
+- `support_top_distance`
+- `support_xy_distance`
+- `support_bottom_distance`
+- `support_angle`
+
+**To implement differentiated support, we need to also expose:**
+- `support_pattern`
+- `support_infill_rate`
+- `support_line_width`
+- `support_wall_count`
+- `support_interface_enable`
+- `support_roof_enable`
+- `support_bottom_enable`
+
+This would allow creating "minimal" volumes for edges vs "standard" volumes for tips.
 
 ## Edge Rail Geometry Concept
 
@@ -281,13 +339,92 @@ If another part of the model is below:
 
 ## Open Questions
 
-1. **How thin can stability supports be?** Need to test minimum effective rail width for common materials.
+1. **How thin can stability supports be?** Need to test minimum effective rail width for common materials (PLA, ABS, PETG). Likely depends on:
+   - Layer height
+   - Print speed
+   - Cooling capability
+   - Overhang length
 
-2. **Curve settings integration?** Need to clarify what curve-based approaches could help (tree supports? custom paths?).
+2. **When is structural support not needed?** Very short overhangs might only need stability support, not full structural. Need to determine thresholds based on:
+   - Overhang length (< 5mm might self-bridge?)
+   - Material properties
+   - Print temperature
 
-3. **When is structural support not needed?** Very short overhangs might only need stability support, not full structural.
+3. **Multiple dangling bits?** How to handle complex models with many overhangs efficiently:
+   - Batch detection and classification
+   - Grouping nearby overhangs
+   - Priority ordering by severity
 
-4. **Multiple dangling bits?** How to handle complex models with many overhangs efficiently.
+4. **Tree supports as alternative?** Could tree supports naturally provide this differentiated approach? The trunk could act as structural support while branches provide stability. Worth investigating Cura's tree support implementation.
+
+5. **Validation testing?** Need test models with various dangling bit configurations to validate the approach:
+   - Single vertical finger
+   - Horizontal blade
+   - Curved overhang
+   - Multiple dangling bits at different heights
+
+## Immediate Next Steps
+
+### Step 1: Extend Plugin Settings
+
+Modify `MySupportImprover.py` to support additional settings in cutting meshes:
+
+```python
+# Current settings (line 354-359)
+settingsList = {
+    "support_z_distance": None,
+    "support_top_distance": None,
+    "support_xy_distance": None,
+    "support_bottom_distance": None,
+    "support_angle": None
+}
+
+# Add these for differentiated support:
+extended_settings = {
+    "support_pattern": None,          # lines, grid, triangles, etc.
+    "support_infill_rate": None,      # 0-100%
+    "support_line_width": None,       # mm
+    "support_wall_count": None,       # 0, 1, 2...
+    "support_interface_enable": None, # True/False
+}
+```
+
+### Step 2: Add UI Controls for Support Type
+
+Add a dropdown or toggle in `SupportImprover.qml` to select support mode:
+- **Structural** (standard dense support)
+- **Stability** (minimal edge support)
+- **Custom** (manual settings)
+
+### Step 3: Create Preset Configurations
+
+Add built-in presets for the two support types:
+
+```python
+support_presets = {
+    "structural": {
+        "support_pattern": "grid",
+        "support_infill_rate": 15,
+        "support_wall_count": 1,
+        "support_interface_enable": True,
+    },
+    "stability": {
+        "support_pattern": "lines",
+        "support_infill_rate": 5,
+        "support_wall_count": 1,
+        "support_interface_enable": False,
+    }
+}
+```
+
+### Step 4: Test with Simple Models
+
+Create or find test STL files:
+- Simple vertical finger (classic dangling bit)
+- Horizontal blade edge
+- T-shaped overhang
+
+Test placing structural volume under tip, stability volumes on sides.
 
 ## Related Files
 
