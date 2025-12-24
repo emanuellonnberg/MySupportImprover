@@ -290,6 +290,136 @@ For custom `support_mesh` generation, edge rails could be:
 
 The rail acts as a "fence" that prevents the edge from curling outward during cooling.
 
+## Alternative: Attached Stability Pieces
+
+An alternative to traditional support structures is to **attach a solid piece directly to the dangling part** that provides stability during printing and is removed afterward.
+
+### The Problem with Traditional Edge Support
+
+Traditional support underneath dangling bit edges has issues:
+- Hard to access for removal (trapped in tight spaces)
+- Risk of damaging the part during removal
+- May leave marks on visible surfaces
+- Complex geometry = complex support
+
+### The Attached Piece Solution
+
+Instead of supporting the dangling bit from below, **add geometry that extends from it**:
+
+```
+    ATTACHED STABILITY WING
+
+         ╔═══════════╗
+         ║  dangling ║
+         ║    bit    ╠════════╗
+         ╚═════╤═════╝        ║ ← stability wing
+               │              ║   (attached to part)
+               │              ║
+          ┌────┴────┐    ┌────╨────┐
+          │ tip     │    │ wing    │ ← wing is easy to support
+          │ support │    │ support │   (simple flat bottom)
+          └─────────┘    └─────────┘
+    ════════════════════════════════ build plate
+```
+
+### Two Variants
+
+**Variant A: Wing reaches build plate**
+- Attached piece extends down to the build plate directly
+- No support needed for the wing itself
+- Wing is printed solid, provides full stability
+- Cut/snap off after printing
+
+```
+    WING TO BUILD PLATE
+
+         ╔═══════════╗
+         ║  dangling ╠═══╗
+         ║    bit    ║   ║
+         ╚═════╤═════╝   ║ ← solid wing
+               │         ║   printed with part
+          ┌────┴────┐    ║
+          │ support │    ║
+          └─────────┘    ║
+    ══════════════════════╧══ build plate
+```
+
+**Variant B: Wing is easily supportable**
+- Attached piece extends horizontally or at shallow angle
+- Creates a simple flat surface that's easy to support
+- Transfers complexity from dangling bit to simple wing
+- Support under wing is accessible and easy to remove
+
+```
+    EASILY SUPPORTABLE WING
+
+         ╔═══════════╗
+         ║  dangling ╠════════════╗
+         ║    bit    ║            ║ ← flat wing
+         ╚═════╤═════╝            ║   (simple to support)
+               │              ┌───╨───┐
+          ┌────┴────┐         │ easy  │
+          │ support │         │support│ ← accessible!
+          └─────────┘         └───────┘
+    ═══════════════════════════════════ build plate
+```
+
+### Advantages of Attached Pieces
+
+| Aspect | Traditional Support | Attached Wing |
+|--------|--------------------:|:--------------|
+| Removal access | Difficult (tight spaces) | Easy (external) |
+| Surface marks | On dangling bit | On sacrificial wing |
+| Support complexity | Matches part geometry | Simple flat surface |
+| Stability | Indirect (through support) | Direct (solid connection) |
+| Material | Support material | Model material |
+
+### Implementation Considerations
+
+**Geometry Generation:**
+- Calculate wing direction (perpendicular to edge, or toward build plate)
+- Determine wing dimensions (length, width, thickness)
+- Ensure wing doesn't intersect other model parts
+- Add as `infill_mesh` or direct geometry modification
+
+**Wing Properties:**
+- Thin enough to cut/snap off easily (1-2mm thickness)
+- Wide enough for stability (5-10mm depending on overhang size)
+- Angled to reach build plate or create easy support surface
+
+**Attachment Point:**
+- Connect at or near the edge of the dangling bit
+- Small contact area for easy removal
+- Consider adding a "break line" or thin section for clean separation
+
+**Post-Processing:**
+- Design for easy cutting (flush with part surface)
+- Minimize sanding/finishing needed
+- Consider adding alignment marks for cutting
+
+### When to Use Each Approach
+
+| Scenario | Best Approach |
+|----------|---------------|
+| Space underneath is accessible | Traditional stability support |
+| Space underneath is cramped | Attached wing |
+| Part surface quality critical | Attached wing (marks on wing, not part) |
+| Minimal post-processing wanted | Traditional support (no cutting) |
+| Very long/heavy dangling bit | Attached wing (stronger connection) |
+| Multiple dangling bits close together | Attached wings (can share supports) |
+
+### Mesh Type for Attached Pieces
+
+For attached wings, use **direct mesh modification** rather than support mesh:
+- Add geometry directly to the model
+- Print as solid part of the object
+- No support interface/gap (it's attached)
+
+Alternatively, could be implemented as a special modifier that:
+1. Detects dangling bits
+2. Generates wing geometry
+3. Adds as separate body (for easy selection/removal in slicer)
+
 ## Build Plate vs Model-to-Model Support
 
 ### Clear Path to Build Plate
@@ -331,6 +461,13 @@ If another part of the model is below:
 - [ ] Implement edge rail geometry generation
 - [ ] Implement tip column geometry generation
 - [ ] Add as `support_mesh` type nodes
+
+### Phase 3b: Attached Stability Wings (Alternative)
+- [ ] Implement wing geometry generation
+- [ ] Calculate optimal wing direction (toward build plate or horizontal)
+- [ ] Add break-line feature for easy removal
+- [ ] Collision detection with other model parts
+- [ ] Add as model geometry or separate body
 
 ### Phase 4: Refinement
 - [ ] Handle obstructed paths (model-to-model support)
