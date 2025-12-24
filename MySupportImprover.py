@@ -38,11 +38,50 @@ import numpy
 #)  # Plugin translation file import
 
 class MySupportImprover(Tool):
+    # Support mode constants
+    SUPPORT_MODE_STRUCTURAL = "structural"
+    SUPPORT_MODE_STABILITY = "stability"
+    SUPPORT_MODE_CUSTOM = "custom"
+
+    # Support mode presets with Cura setting values
+    SUPPORT_MODE_SETTINGS = {
+        "structural": {
+            "support_pattern": "grid",
+            "support_infill_rate": 15,
+            "support_line_width": 0.4,
+            "support_wall_count": 1,
+            "support_interface_enable": True,
+            "support_roof_enable": True,
+            "support_bottom_enable": True,
+            "description": "Dense support for load-bearing (under tip)"
+        },
+        "stability": {
+            "support_pattern": "lines",
+            "support_infill_rate": 5,
+            "support_line_width": 0.3,
+            "support_wall_count": 1,
+            "support_interface_enable": False,
+            "support_roof_enable": False,
+            "support_bottom_enable": False,
+            "description": "Minimal support for edge stabilization"
+        },
+        "custom": {
+            "support_pattern": "lines",
+            "support_infill_rate": 10,
+            "support_line_width": 0.4,
+            "support_wall_count": 0,
+            "support_interface_enable": False,
+            "support_roof_enable": False,
+            "support_bottom_enable": False,
+            "description": "Custom support settings"
+        }
+    }
+
     def __init__(self):
         super().__init__()
         self._shortcut_key = Qt.Key.Key_E
         self._controller = self.getController()
-        
+
         # Initialize properties with default values
         self._cube_x = 3.0
         self._cube_y = 3.0
@@ -53,8 +92,25 @@ class MySupportImprover(Tool):
         self._support_angle = 45.0  # Default support angle
         self._current_preset = "Medium"  # Add current preset tracking
         self._is_custom = False  # Track if using custom values
-        
-        self.setExposedProperties("CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets", "SupportAngle", "CurrentPreset", "IsCustom")
+
+        # Support mode settings
+        self._support_mode = self.SUPPORT_MODE_STRUCTURAL  # Default to structural
+        self._support_pattern = "grid"
+        self._support_infill_rate = 15
+        self._support_line_width = 0.4
+        self._support_wall_count = 1
+        self._support_interface_enable = True
+        self._support_roof_enable = True
+        self._support_bottom_enable = True
+
+        self.setExposedProperties(
+            "CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets",
+            "SupportAngle", "CurrentPreset", "IsCustom",
+            # New support mode properties
+            "SupportMode", "SupportModes", "SupportPattern", "SupportInfillRate",
+            "SupportLineWidth", "SupportWallCount", "SupportInterfaceEnable",
+            "SupportRoofEnable", "SupportBottomEnable", "SupportModeDescription"
+        )
         
         # Log initialization
         Logger.log("d", "Support Improver Tool initialized with properties: X=%s, Y=%s, Z=%s", 
@@ -161,6 +217,124 @@ class MySupportImprover(Tool):
             self.propertyChanged.emit()
 
     IsCustom = pyqtProperty(bool, fget=getIsCustom, fset=setIsCustom)
+
+    # Support Mode Properties
+    def getSupportMode(self) -> str:
+        return self._support_mode
+
+    def setSupportMode(self, mode: str) -> None:
+        if mode != self._support_mode and mode in self.SUPPORT_MODE_SETTINGS:
+            self._support_mode = mode
+            # Apply preset settings for this mode
+            settings = self.SUPPORT_MODE_SETTINGS[mode]
+            self._support_pattern = settings["support_pattern"]
+            self._support_infill_rate = settings["support_infill_rate"]
+            self._support_line_width = settings["support_line_width"]
+            self._support_wall_count = settings["support_wall_count"]
+            self._support_interface_enable = settings["support_interface_enable"]
+            self._support_roof_enable = settings["support_roof_enable"]
+            self._support_bottom_enable = settings["support_bottom_enable"]
+            Logger.log("d", f"Support mode changed to {mode}")
+            self.propertyChanged.emit()
+
+    SupportMode = pyqtProperty(str, fget=getSupportMode, fset=setSupportMode)
+
+    def getSupportModes(self) -> list:
+        """Return list of available support modes for UI dropdown."""
+        return [
+            {"value": "structural", "label": "Structural (Dense)"},
+            {"value": "stability", "label": "Stability (Minimal)"},
+            {"value": "custom", "label": "Custom"}
+        ]
+
+    SupportModes = pyqtProperty("QVariantList", fget=getSupportModes)
+
+    def getSupportModeDescription(self) -> str:
+        """Return description of current support mode."""
+        return self.SUPPORT_MODE_SETTINGS.get(self._support_mode, {}).get("description", "")
+
+    SupportModeDescription = pyqtProperty(str, fget=getSupportModeDescription)
+
+    def getSupportPattern(self) -> str:
+        return self._support_pattern
+
+    def setSupportPattern(self, value: str) -> None:
+        if value != self._support_pattern:
+            self._support_pattern = value
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportPattern = pyqtProperty(str, fget=getSupportPattern, fset=setSupportPattern)
+
+    def getSupportInfillRate(self) -> int:
+        return self._support_infill_rate
+
+    def setSupportInfillRate(self, value: int) -> None:
+        if value != self._support_infill_rate:
+            self._support_infill_rate = int(value)
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportInfillRate = pyqtProperty(int, fget=getSupportInfillRate, fset=setSupportInfillRate)
+
+    def getSupportLineWidth(self) -> float:
+        return self._support_line_width
+
+    def setSupportLineWidth(self, value: float) -> None:
+        if value != self._support_line_width:
+            self._support_line_width = float(value)
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportLineWidth = pyqtProperty(float, fget=getSupportLineWidth, fset=setSupportLineWidth)
+
+    def getSupportWallCount(self) -> int:
+        return self._support_wall_count
+
+    def setSupportWallCount(self, value: int) -> None:
+        if value != self._support_wall_count:
+            self._support_wall_count = int(value)
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportWallCount = pyqtProperty(int, fget=getSupportWallCount, fset=setSupportWallCount)
+
+    def getSupportInterfaceEnable(self) -> bool:
+        return self._support_interface_enable
+
+    def setSupportInterfaceEnable(self, value: bool) -> None:
+        if value != self._support_interface_enable:
+            self._support_interface_enable = bool(value)
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportInterfaceEnable = pyqtProperty(bool, fget=getSupportInterfaceEnable, fset=setSupportInterfaceEnable)
+
+    def getSupportRoofEnable(self) -> bool:
+        return self._support_roof_enable
+
+    def setSupportRoofEnable(self, value: bool) -> None:
+        if value != self._support_roof_enable:
+            self._support_roof_enable = bool(value)
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportRoofEnable = pyqtProperty(bool, fget=getSupportRoofEnable, fset=setSupportRoofEnable)
+
+    def getSupportBottomEnable(self) -> bool:
+        return self._support_bottom_enable
+
+    def setSupportBottomEnable(self, value: bool) -> None:
+        if value != self._support_bottom_enable:
+            self._support_bottom_enable = bool(value)
+            self._support_mode = self.SUPPORT_MODE_CUSTOM
+            self.propertyChanged.emit()
+
+    SupportBottomEnable = pyqtProperty(bool, fget=getSupportBottomEnable, fset=getSupportBottomEnable)
+
+    def applySupportMode(self, mode: str) -> None:
+        """Apply a support mode preset. Called from QML."""
+        self.setSupportMode(mode)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -309,7 +483,13 @@ class MySupportImprover(Tool):
             
             Logger.log("d", "Creating modifier volume node...")
         
-            node.setName("Modifier Volume")
+            # Name the node based on support mode for easy identification
+            mode_names = {
+                "structural": "Structural Support Volume",
+                "stability": "Stability Support Volume",
+                "custom": "Custom Support Volume"
+            }
+            node.setName(mode_names.get(self._support_mode, "Modifier Volume"))
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
 
@@ -351,25 +531,53 @@ class MySupportImprover(Tool):
             
             Logger.log("i", "Modifier mesh type set successfully.")
 
-            settingsList = {
-            "support_z_distance": None,
-            "support_top_distance": None,
-            "support_xy_distance": None,
-            "support_bottom_distance": None,
-            "support_angle": None  # TODO: Why does it not work to set the angle here?
+            # Basic support settings (always included)
+            basicSettingsList = {
+                "support_z_distance": None,
+                "support_top_distance": None,
+                "support_xy_distance": None,
+                "support_bottom_distance": None,
+                "support_angle": None
             }
-            
-            for property_key in settingsList:
+
+            # Extended support settings based on support mode
+            extendedSettingsList = {
+                "support_pattern": self._support_pattern,
+                "support_infill_rate": self._support_infill_rate,
+                "support_line_width": self._support_line_width,
+                "support_wall_count": self._support_wall_count,
+                "support_interface_enable": self._support_interface_enable,
+                "support_roof_enable": self._support_roof_enable,
+                "support_bottom_enable": self._support_bottom_enable
+            }
+
+            # Apply basic settings
+            for property_key in basicSettingsList:
                 if settings.getInstance(property_key) is None:
                     definition = stack.getSettingDefinition(property_key)
-                    new_instance = SettingInstance(definition, settings)
-                    value = settingsList[property_key]
-                    if value != None :
+                    if definition:
+                        new_instance = SettingInstance(definition, settings)
+                        value = basicSettingsList[property_key]
+                        if value is not None:
+                            new_instance.setProperty("value", value)
+                        new_instance.resetState()
+                        settings.addInstance(new_instance)
+
+            # Apply extended support mode settings
+            for property_key, value in extendedSettingsList.items():
+                definition = stack.getSettingDefinition(property_key)
+                if definition:
+                    if settings.getInstance(property_key) is None:
+                        new_instance = SettingInstance(definition, settings)
                         new_instance.setProperty("value", value)
-                    new_instance.resetState()  # Ensure that the state is not seen as a user state.
-                    settings.addInstance(new_instance)
-       
+                        new_instance.resetState()
+                        settings.addInstance(new_instance)
+                    else:
+                        stack.setProperty(property_key, "value", value)
+                    Logger.log("d", f"Set {property_key} to {value}")
+
             stack.setProperty("support_angle", "value", float(self._support_angle))
+            Logger.log("d", f"Applied support mode '{self._support_mode}' settings to modifier volume")
             Logger.log("d", "Set support_angle to " + str(self._support_angle) + " via stack.setProperty.")
             Logger.log("d", f"Now top property says: {stack.getProperty('support_angle', 'value')}")
             op = GroupedOperation()

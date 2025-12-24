@@ -51,16 +51,79 @@ Item {
     Column {
         id: mainColumn
         spacing: UM.Theme.getSize("default_margin").height
-        
+
         // Remove anchors from Column
         width: mainGrid.width + UM.Theme.getSize("default_margin").width * 2
 
+        // Support Mode Selection
         Row {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-            
+
             Label {
                 height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Presets:")
+                text: catalog.i18nc("@label", "Support Mode:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+            }
+
+            ComboBox {
+                id: supportModeComboBox
+                width: 150
+                height: UM.Theme.getSize("setting_control").height
+                model: ["Structural (Dense)", "Stability (Minimal)", "Custom"]
+                currentIndex: {
+                    if (UM.ActiveTool) {
+                        var mode = UM.ActiveTool.properties.getValue("SupportMode")
+                        if (mode === "structural") return 0
+                        if (mode === "stability") return 1
+                        if (mode === "custom") return 2
+                    }
+                    return 0
+                }
+                onActivated: {
+                    if (UM.ActiveTool) {
+                        var modeMap = ["structural", "stability", "custom"]
+                        UM.ActiveTool.setProperty("SupportMode", modeMap[currentIndex])
+                    }
+                }
+            }
+        }
+
+        // Support Mode Description
+        Label {
+            width: parent.width
+            height: UM.Theme.getSize("setting_control").height
+            text: {
+                if (UM.ActiveTool) {
+                    var mode = UM.ActiveTool.properties.getValue("SupportMode")
+                    if (mode === "structural") return "Dense support for load-bearing areas"
+                    if (mode === "stability") return "Minimal support for edge stabilization"
+                    if (mode === "custom") return "Custom support settings"
+                }
+                return ""
+            }
+            font: UM.Theme.getFont("default_italic")
+            color: UM.Theme.getColor("text_inactive")
+            verticalAlignment: Text.AlignVCenter
+            renderType: Text.NativeRendering
+        }
+
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // Size Presets Row
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Size Preset:")
                 font: UM.Theme.getFont("default")
                 color: UM.Theme.getColor("text")
                 verticalAlignment: Text.AlignVCenter
@@ -381,6 +444,94 @@ Item {
                         }
                     }
                 }
+            }
+        }
+
+        // Separator before support settings
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // Support Settings Info Header
+        Label {
+            text: catalog.i18nc("@label", "Support Settings (applied to volume):")
+            font: UM.Theme.getFont("default_bold")
+            color: UM.Theme.getColor("text")
+            renderType: Text.NativeRendering
+        }
+
+        // Support Settings Display Grid
+        Grid {
+            id: supportSettingsGrid
+            columns: 2
+            columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
+            rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+
+            Label {
+                text: catalog.i18nc("@label", "Pattern:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            Label {
+                text: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportPattern") : "grid"
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Infill Rate:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            Label {
+                text: (UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate") : 15) + "%"
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Line Width:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            Label {
+                text: (UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40") + " mm"
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Wall Count:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            Label {
+                text: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount") : 1
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Interface:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            Label {
+                text: (UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable")) ? "Enabled" : "Disabled"
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
             }
         }
     }
