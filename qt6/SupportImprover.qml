@@ -239,6 +239,51 @@ Item {
                 wrapMode: Text.WordWrap
             }
 
+            // Custom Support Mesh Section (Phase 3)
+            Label {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                text: catalog.i18nc("@label", "Custom Support Mesh:")
+                font: UM.Theme.getFont("default_bold")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                ComboBox {
+                    id: customSupportTypeComboBox
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    model: ["Auto", "Columns Only", "Rails Only"]
+                    currentIndex: 0
+                }
+
+                Button {
+                    id: createCustomMeshButton
+                    width: 130
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@button", "Create Custom Mesh")
+                    onClicked: {
+                        if (UM.ActiveTool) {
+                            var typeMap = ["auto", "tip_column", "edge_rail"]
+                            UM.ActiveTool.triggerActionWithData("createCustomSupportMesh", typeMap[customSupportTypeComboBox.currentIndex])
+                        }
+                    }
+                }
+            }
+
+            Label {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                width: parent.width
+                text: "Creates tapered columns for tips and thin rails for edges"
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+                wrapMode: Text.WordWrap
+            }
+
             // Separator after detection section
             Rectangle {
                 width: parent.width

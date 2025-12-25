@@ -1597,3 +1597,385 @@ class MySupportImprover(Tool):
             self._createModifierVolume(selected_node, position)
 
         Logger.log("i", "Support creation complete")
+
+    # =====================================================================
+    # Phase 3: Custom Support Mesh Generation
+    # =====================================================================
+
+    # Custom support mesh settings
+    SUPPORT_MESH_EDGE_RAIL = "edge_rail"
+    SUPPORT_MESH_TIP_COLUMN = "tip_column"
+
+    def _find_boundary_edges(self, region_face_ids: List[int], overhang_mask: numpy.ndarray,
+                              adjacency: Dict[int, List[int]], indices: numpy.ndarray,
+                              vertices: numpy.ndarray) -> List[Tuple[numpy.ndarray, numpy.ndarray]]:
+        """Find edges between overhang and non-overhang faces.
+
+        These are the "boundary edges" where the overhang region meets the rest of the model.
+
+        Args:
+            region_face_ids: List of face indices in the overhang region
+            overhang_mask: Boolean array indicating which faces are overhangs
+            adjacency: Face adjacency graph
+            indices: Mx3 array of all face indices
+            vertices: Nx3 array of all vertex positions
+
+        Returns:
+            List of edge tuples, where each edge is (vertex1, vertex2) as numpy arrays
+        """
+        boundary_edges = []
+        region_set = set(region_face_ids)
+
+        for face_id in region_face_ids:
+            face = indices[face_id]
+
+            for neighbor_id in adjacency.get(face_id, []):
+                if neighbor_id not in region_set and not overhang_mask[neighbor_id]:
+                    # This neighbor is not an overhang - find the shared edge
+                    neighbor_face = indices[neighbor_id]
+
+                    # Find shared vertices between the two faces
+                    shared_verts = set(face) & set(neighbor_face)
+                    if len(shared_verts) == 2:
+                        v_ids = list(shared_verts)
+                        edge = (vertices[v_ids[0]].copy(), vertices[v_ids[1]].copy())
+                        boundary_edges.append(edge)
+
+        Logger.log("d", f"Found {len(boundary_edges)} boundary edges")
+        return boundary_edges
+
+    def _create_edge_rail_mesh(self, edge_start: numpy.ndarray, edge_end: numpy.ndarray,
+                                rail_width: float = 0.8, rail_height: float = 2.0,
+                                extend_to_plate: bool = True) -> MeshBuilder:
+        """Create a thin rail mesh along an edge.
+
+        The rail extends perpendicular to the edge and downward.
+
+        Args:
+            edge_start: Start vertex of the edge (numpy array [x, y, z])
+            edge_end: End vertex of the edge (numpy array [x, y, z])
+            rail_width: Width of the rail in mm (perpendicular to edge)
+            rail_height: Height of the rail below the edge (if not extending to plate)
+            extend_to_plate: If True, extend rail down to Z=0
+
+        Returns:
+            MeshBuilder with the rail geometry
+        """
+        mesh = MeshBuilder()
+
+        # Calculate edge direction and length
+        edge_vec = edge_end - edge_start
+        edge_length = numpy.linalg.norm(edge_vec)
+
+        if edge_length < 0.1:
+            return mesh  # Edge too short
+
+        edge_dir = edge_vec / edge_length
+
+        # Calculate perpendicular direction (horizontal, away from edge)
+        # Cross with up vector to get horizontal perpendicular
+        up = numpy.array([0.0, 1.0, 0.0])
+        perp_dir = numpy.cross(edge_dir, up)
+        perp_length = numpy.linalg.norm(perp_dir)
+
+        if perp_length < 0.01:
+            # Edge is vertical, use a different approach
+            perp_dir = numpy.array([1.0, 0.0, 0.0])
+        else:
+            perp_dir = perp_dir / perp_length
+
+        # Determine rail height
+        edge_min_y = min(edge_start[1], edge_end[1])
+        if extend_to_plate and edge_min_y > 0:
+            actual_height = edge_min_y + 0.5  # Extend slightly into build plate
+        else:
+            actual_height = rail_height
+
+        # Rail half-dimensions
+        half_width = rail_width / 2
+        half_length = edge_length / 2
+
+        # Center of the rail
+        edge_center = (edge_start + edge_end) / 2
+        rail_center = edge_center.copy()
+        rail_center[1] -= actual_height / 2  # Move center down
+
+        # Build vertices for the rail box
+        # The rail is oriented along the edge direction
+        verts = []
+
+        # 8 corners of the rail box
+        for dy in [-actual_height / 2, actual_height / 2]:  # Bottom, Top
+            for dw in [-half_width, half_width]:  # Perpendicular direction
+                for dl in [-half_length, half_length]:  # Along edge direction
+                    vert = rail_center.copy()
+                    vert[1] += dy
+                    vert += perp_dir * dw
+                    vert += edge_dir * dl
+                    # Convert to Cura coordinate format [x, z, y]
+                    verts.append([vert[0], vert[1], vert[2]])
+
+        # Create faces (12 triangles for 6 faces)
+        # Vertex order: 0-3 bottom, 4-7 top
+        # 0: -w,-l  1: +w,-l  2: -w,+l  3: +w,+l (bottom)
+        # 4: -w,-l  5: +w,-l  6: -w,+l  7: +w,+l (top)
+
+        face_indices = [
+            # Bottom face
+            [0, 1, 3], [0, 3, 2],
+            # Top face
+            [4, 7, 5], [4, 6, 7],
+            # Front face (-l)
+            [0, 4, 5], [0, 5, 1],
+            # Back face (+l)
+            [2, 3, 7], [2, 7, 6],
+            # Left face (-w)
+            [0, 2, 6], [0, 6, 4],
+            # Right face (+w)
+            [1, 5, 7], [1, 7, 3],
+        ]
+
+        mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+        mesh.setIndices(numpy.asarray(face_indices, dtype=numpy.int32))
+        mesh.calculateNormals()
+
+        return mesh
+
+    def _create_tip_column_mesh(self, tip_position: numpy.ndarray,
+                                 column_radius: float = 2.0,
+                                 sides: int = 8,
+                                 taper: float = 0.7) -> MeshBuilder:
+        """Create a support column from the tip down to the build plate.
+
+        Args:
+            tip_position: Position of the tip (numpy array [x, y, z])
+            column_radius: Radius of the column at the base
+            sides: Number of sides for the column (polygon approximation)
+            taper: Taper factor (0.5 = 50% smaller at top than bottom)
+
+        Returns:
+            MeshBuilder with the column geometry
+        """
+        mesh = MeshBuilder()
+
+        tip_y = tip_position[1]
+        if tip_y <= 0:
+            Logger.log("w", "Tip is at or below build plate, cannot create column")
+            return mesh
+
+        # Column parameters
+        base_y = 0.0
+        height = tip_y
+        top_radius = column_radius * taper
+        base_radius = column_radius
+
+        # Generate vertices
+        verts = []
+        indices = []
+
+        # Bottom center
+        verts.append([tip_position[0], base_y, tip_position[2]])
+        bottom_center_idx = 0
+
+        # Top center
+        verts.append([tip_position[0], tip_y, tip_position[2]])
+        top_center_idx = 1
+
+        # Bottom ring vertices
+        bottom_start_idx = 2
+        for i in range(sides):
+            angle = 2 * math.pi * i / sides
+            x = tip_position[0] + base_radius * math.cos(angle)
+            z = tip_position[2] + base_radius * math.sin(angle)
+            verts.append([x, base_y, z])
+
+        # Top ring vertices
+        top_start_idx = bottom_start_idx + sides
+        for i in range(sides):
+            angle = 2 * math.pi * i / sides
+            x = tip_position[0] + top_radius * math.cos(angle)
+            z = tip_position[2] + top_radius * math.sin(angle)
+            verts.append([x, tip_y, z])
+
+        # Bottom cap faces (fan from center)
+        for i in range(sides):
+            next_i = (i + 1) % sides
+            indices.append([bottom_center_idx,
+                           bottom_start_idx + next_i,
+                           bottom_start_idx + i])
+
+        # Top cap faces (fan from center)
+        for i in range(sides):
+            next_i = (i + 1) % sides
+            indices.append([top_center_idx,
+                           top_start_idx + i,
+                           top_start_idx + next_i])
+
+        # Side faces (quads as two triangles)
+        for i in range(sides):
+            next_i = (i + 1) % sides
+            b1 = bottom_start_idx + i
+            b2 = bottom_start_idx + next_i
+            t1 = top_start_idx + i
+            t2 = top_start_idx + next_i
+
+            # Two triangles per quad
+            indices.append([b1, t1, b2])
+            indices.append([b2, t1, t2])
+
+        mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+        mesh.setIndices(numpy.asarray(indices, dtype=numpy.int32))
+        mesh.calculateNormals()
+
+        return mesh
+
+    def _create_support_mesh_node(self, mesh_builder: MeshBuilder, name: str,
+                                   parent: CuraSceneNode) -> Optional[CuraSceneNode]:
+        """Create a scene node with the support_mesh property set.
+
+        Args:
+            mesh_builder: The MeshBuilder containing the geometry
+            name: Name for the node
+            parent: Parent node to attach to
+
+        Returns:
+            The created CuraSceneNode, or None if creation failed
+        """
+        try:
+            mesh_data = mesh_builder.build()
+            if mesh_data is None or mesh_data.getVertexCount() == 0:
+                Logger.log("w", f"Cannot create support mesh '{name}': empty mesh")
+                return None
+
+            node = CuraSceneNode()
+            node.setName(name)
+            node.setSelectable(True)
+            node.setCalculateBoundingBox(True)
+            node.setMeshData(mesh_data)
+            node.calculateBoundingBoxMesh()
+
+            # Add decorators
+            active_build_plate = CuraApplication.getInstance().getMultiBuildPlateModel().activeBuildPlate
+            node.addDecorator(BuildPlateDecorator(active_build_plate))
+            node.addDecorator(SliceableObjectDecorator())
+
+            # Set as support_mesh type
+            if not self.setMeshType(node, "support_mesh"):
+                Logger.log("w", f"Failed to set support_mesh type for '{name}'")
+
+            # Add to scene
+            op = GroupedOperation()
+            op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
+            op.addOperation(SetParentOperation(node, parent))
+            op.push()
+
+            CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node)
+
+            Logger.log("i", f"Created support mesh: {name}")
+            return node
+
+        except Exception as e:
+            Logger.log("e", f"Error creating support mesh '{name}': {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+            return None
+
+    def createCustomSupportMesh(self, support_type: str = "auto"):
+        """Create custom support mesh geometry for detected overhangs.
+
+        Args:
+            support_type: Type of support to create:
+                - "auto": Create edge rails for boundaries, columns for tips
+                - "edge_rail": Only create edge rails
+                - "tip_column": Only create tip columns
+        """
+        selected_node = Selection.getSelectedObject(0)
+        if not selected_node:
+            Logger.log("w", "No object selected")
+            return
+
+        if not self._detected_overhangs:
+            Logger.log("w", "No overhangs detected. Run detection first.")
+            return
+
+        # Get mesh data for boundary edge detection
+        mesh_data = selected_node.getMeshData()
+        if not mesh_data:
+            return
+
+        transformed_mesh = mesh_data.getTransformed(selected_node.getWorldTransformation())
+        vertices = transformed_mesh.getVertices()
+
+        if transformed_mesh.hasIndices():
+            indices = transformed_mesh.getIndices()
+        else:
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        # Create overhang mask
+        overhang_mask = numpy.zeros(len(self._overhang_angles), dtype=bool)
+        for region in self._detected_overhangs:
+            for face_id in region["face_ids"]:
+                if face_id < len(overhang_mask):
+                    overhang_mask[face_id] = True
+
+        Logger.log("i", f"Creating custom support meshes (type: {support_type})")
+
+        rails_created = 0
+        columns_created = 0
+
+        for i, region in enumerate(self._detected_overhangs):
+            region_type = region["type"]
+
+            # Create tip column for tip regions
+            if region_type == "tip" and support_type in ["auto", "tip_column"]:
+                # Find the lowest point in the region
+                region_vertices = region["vertices"]
+                if len(region_vertices) > 0:
+                    min_y_idx = numpy.argmin(region_vertices[:, 1])
+                    tip_pos = region_vertices[min_y_idx]
+
+                    column_mesh = self._create_tip_column_mesh(
+                        tip_pos,
+                        column_radius=2.0,
+                        sides=8,
+                        taper=0.6
+                    )
+
+                    if column_mesh.getVertexCount() > 0:
+                        self._create_support_mesh_node(
+                            column_mesh,
+                            f"Tip Support Column {i}",
+                            selected_node
+                        )
+                        columns_created += 1
+
+            # Create edge rails for boundary regions
+            if region_type == "boundary" and support_type in ["auto", "edge_rail"]:
+                boundary_edges = self._find_boundary_edges(
+                    region["face_ids"],
+                    overhang_mask,
+                    self._overhang_adjacency,
+                    indices,
+                    vertices
+                )
+
+                # Merge nearby edges and create rails
+                for j, (edge_start, edge_end) in enumerate(boundary_edges):
+                    rail_mesh = self._create_edge_rail_mesh(
+                        edge_start,
+                        edge_end,
+                        rail_width=0.8,
+                        rail_height=3.0,
+                        extend_to_plate=True
+                    )
+
+                    if rail_mesh.getVertexCount() > 0:
+                        self._create_support_mesh_node(
+                            rail_mesh,
+                            f"Edge Rail {i}-{j}",
+                            selected_node
+                        )
+                        rails_created += 1
+
+        Logger.log("i", f"Custom support creation complete: "
+                      f"{columns_created} columns, {rails_created} rails")

@@ -460,10 +460,12 @@ If another part of the model is below:
 - [x] Auto-generate edge volumes with minimal settings
 - [x] Add UI controls for stability support parameters (support mode dropdown, settings display)
 
-### Phase 3: Custom Support Mesh (Optional)
-- [ ] Implement edge rail geometry generation
-- [ ] Implement tip column geometry generation
-- [ ] Add as `support_mesh` type nodes
+### Phase 3: Custom Support Mesh ✅ FULLY IMPLEMENTED
+- [x] Implement edge rail geometry generation (thin rails along boundary edges)
+- [x] Implement tip column geometry generation (tapered columns from tip to build plate)
+- [x] Add as `support_mesh` type nodes
+- [x] Boundary edge detection (finds edges between overhang and non-overhang faces)
+- [x] UI with support type dropdown (Auto/Columns Only/Rails Only)
 
 ### Phase 3b: Attached Stability Wings (Alternative) ✅ FULLY IMPLEMENTED
 - [x] Implement wing geometry generation
