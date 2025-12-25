@@ -257,6 +257,132 @@ Item {
                 }
             }
 
+            // Wing Rotation
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Rotation:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                Slider {
+                    id: wingRotationSlider
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    from: -180
+                    to: 180
+                    stepSize: 15
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("WingRotation") : 0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingRotation", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 60
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "°"
+                    text: wingRotationSlider.value.toFixed(0)
+                    validator: DoubleValidator { bottom: -180; top: 180; decimals: 0 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingRotation", value)
+                            wingRotationSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Break-line Enable
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Break-line:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                CheckBox {
+                    id: breaklineCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("WingBreaklineEnable") : true
+                    onCheckedChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingBreaklineEnable", checked)
+                        }
+                    }
+                }
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: breaklineCheckbox.checked ? "Enabled (easier removal)" : "Disabled"
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text_inactive")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                }
+            }
+
+            // Break-line Depth (only visible when break-line is enabled)
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("WingBreaklineEnable")
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Notch Depth:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                Slider {
+                    id: breaklineDepthSlider
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.2
+                    to: 1.0
+                    stepSize: 0.1
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("WingBreaklineDepth") : 0.5
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingBreaklineDepth", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 60
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: breaklineDepthSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 0.2; top: 1.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingBreaklineDepth", value)
+                            breaklineDepthSlider.value = value
+                        }
+                    }
+                }
+            }
+
             // Separator after wing settings
             Rectangle {
                 width: parent.width

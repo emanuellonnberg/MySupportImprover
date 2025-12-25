@@ -9,6 +9,9 @@ from UM.Logger import Logger
 from UM.Application import Application
 from UM.Math.Vector import Vector
 from UM.Operations.TranslateOperation import TranslateOperation
+from UM.Operations.RotateOperation import RotateOperation
+from UM.Math.Quaternion import Quaternion
+import math
 from UM.Tool import Tool
 from UM.Event import Event, MouseEvent
 from UM.Mesh.MeshBuilder import MeshBuilder
@@ -116,6 +119,10 @@ class MySupportImprover(Tool):
         self._wing_thickness = 1.5  # mm - thickness of the wing
         self._wing_width = 5.0  # mm - width of the wing (perpendicular to edge)
         self._wing_angle = 0.0  # degrees - angle from vertical (0 = straight down)
+        self._wing_breakline_enable = True  # Enable break-line for easy removal
+        self._wing_breakline_depth = 0.5  # mm - how deep the break-line notch is
+        self._wing_breakline_position = 2.0  # mm - distance from top of wing
+        self._wing_rotation = 0.0  # degrees - rotation around vertical axis
 
         self.setExposedProperties(
             "CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets",
@@ -125,7 +132,9 @@ class MySupportImprover(Tool):
             "SupportLineWidth", "SupportWallCount", "SupportInterfaceEnable",
             "SupportRoofEnable", "SupportBottomEnable", "SupportModeDescription",
             # Wing properties
-            "WingDirection", "WingThickness", "WingWidth", "WingAngle"
+            "WingDirection", "WingThickness", "WingWidth", "WingAngle",
+            "WingBreaklineEnable", "WingBreaklineDepth", "WingBreaklinePosition",
+            "WingRotation"
         )
         
         # Log initialization
@@ -389,6 +398,52 @@ class MySupportImprover(Tool):
             self.propertyChanged.emit()
 
     WingAngle = pyqtProperty(float, fget=getWingAngle, fset=setWingAngle)
+
+    def getWingBreaklineEnable(self) -> bool:
+        return self._wing_breakline_enable
+
+    def setWingBreaklineEnable(self, value: bool) -> None:
+        if value != self._wing_breakline_enable:
+            self._wing_breakline_enable = bool(value)
+            self.propertyChanged.emit()
+
+    WingBreaklineEnable = pyqtProperty(bool, fget=getWingBreaklineEnable, fset=setWingBreaklineEnable)
+
+    def getWingBreaklineDepth(self) -> float:
+        return self._wing_breakline_depth
+
+    def setWingBreaklineDepth(self, value: float) -> None:
+        if value != self._wing_breakline_depth:
+            self._wing_breakline_depth = float(value)
+            self.propertyChanged.emit()
+
+    WingBreaklineDepth = pyqtProperty(float, fget=getWingBreaklineDepth, fset=setWingBreaklineDepth)
+
+    def getWingBreaklinePosition(self) -> float:
+        return self._wing_breakline_position
+
+    def setWingBreaklinePosition(self, value: float) -> None:
+        if value != self._wing_breakline_position:
+            self._wing_breakline_position = float(value)
+            self.propertyChanged.emit()
+
+    WingBreaklinePosition = pyqtProperty(float, fget=getWingBreaklinePosition, fset=setWingBreaklinePosition)
+
+    def getWingRotation(self) -> float:
+        return self._wing_rotation
+
+    def setWingRotation(self, value: float) -> None:
+        # Normalize to -180 to 180 range
+        value = float(value)
+        while value > 180:
+            value -= 360
+        while value < -180:
+            value += 360
+        if value != self._wing_rotation:
+            self._wing_rotation = value
+            self.propertyChanged.emit()
+
+    WingRotation = pyqtProperty(float, fget=getWingRotation, fset=setWingRotation)
 
     def applySupportMode(self, mode: str) -> None:
         """Apply a support mode preset. Called from QML."""
@@ -733,8 +788,10 @@ class MySupportImprover(Tool):
         mesh.calculateNormals()
         return mesh
 
-    def _createWingMesh(self, width: float, thickness: float, height: float):
-        """Create a thin wing/fin mesh.
+    def _createWingMesh(self, width: float, thickness: float, height: float,
+                        breakline_enable: bool = False, breakline_depth: float = 0.5,
+                        breakline_position: float = 2.0, breakline_height: float = 0.8):
+        """Create a thin wing/fin mesh, optionally with a break-line notch.
 
         The wing is oriented as a vertical plate:
         - Width: along X axis (how wide the wing extends from the attachment point)
@@ -742,38 +799,181 @@ class MySupportImprover(Tool):
         - Height: along Z axis (how tall the wing is, from top to bottom)
 
         The wing is centered at origin, with the top at Z=height/2
+
+        If breakline_enable is True, a notch is created near the top of the wing
+        to make it easier to snap off after printing.
         """
         mesh = MeshBuilder()
         w = width / 2
         t = thickness / 2
         h = height / 2
 
-        # Cura uses [x, z, y] coordinate format
-        # Create a thin box (wing)
-        verts = [
-            # Top face
-            [-w,  h, -t], [-w,  h,  t], [ w,  h,  t], [ w,  h, -t],
-            # Bottom face
-            [-w, -h, -t], [-w, -h,  t], [ w, -h,  t], [ w, -h, -t],
-            # Back face (Y-)
-            [-w, -h, -t], [-w,  h, -t], [ w,  h, -t], [ w, -h, -t],
-            # Front face (Y+)
-            [-w, -h,  t], [-w,  h,  t], [ w,  h,  t], [ w, -h,  t],
-            # Left face (X-)
-            [-w, -h, -t], [-w, -h,  t], [-w,  h,  t], [-w,  h, -t],
-            # Right face (X+)
-            [ w, -h, -t], [ w, -h,  t], [ w,  h,  t], [ w,  h, -t]
-        ]
-        mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+        if not breakline_enable or height < (breakline_position + breakline_height + 1.0):
+            # Simple wing without break-line (or wing too short for break-line)
+            # Cura uses [x, z, y] coordinate format
+            verts = [
+                # Top face
+                [-w,  h, -t], [-w,  h,  t], [ w,  h,  t], [ w,  h, -t],
+                # Bottom face
+                [-w, -h, -t], [-w, -h,  t], [ w, -h,  t], [ w, -h, -t],
+                # Back face (Y-)
+                [-w, -h, -t], [-w,  h, -t], [ w,  h, -t], [ w, -h, -t],
+                # Front face (Y+)
+                [-w, -h,  t], [-w,  h,  t], [ w,  h,  t], [ w, -h,  t],
+                # Left face (X-)
+                [-w, -h, -t], [-w, -h,  t], [-w,  h,  t], [-w,  h, -t],
+                # Right face (X+)
+                [ w, -h, -t], [ w, -h,  t], [ w,  h,  t], [ w,  h, -t]
+            ]
+            mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
 
-        indices = []
-        for i in range(0, 24, 4):
-            indices.append([i, i+2, i+1])
-            indices.append([i, i+3, i+2])
-        mesh.setIndices(numpy.asarray(indices, dtype=numpy.int32))
+            indices = []
+            for i in range(0, 24, 4):
+                indices.append([i, i+2, i+1])
+                indices.append([i, i+3, i+2])
+            mesh.setIndices(numpy.asarray(indices, dtype=numpy.int32))
+        else:
+            # Wing with break-line notch
+            # The notch is a thinner section near the top
+            # We create 3 sections: top (above notch), notch (thin), bottom (below notch)
+
+            notch_top = h - breakline_position  # Y position of notch top
+            notch_bottom = notch_top - breakline_height  # Y position of notch bottom
+            notch_thickness = t - breakline_depth  # Reduced thickness at notch (on both sides)
+
+            # Ensure notch doesn't go below the bottom
+            if notch_bottom < -h:
+                notch_bottom = -h + 0.5
+
+            # Ensure some thickness remains
+            if notch_thickness < 0.2:
+                notch_thickness = 0.2
+
+            Logger.log("d", f"Creating wing with break-line: notch_top={notch_top:.2f}, "
+                          f"notch_bottom={notch_bottom:.2f}, notch_thickness={notch_thickness:.2f}")
+
+            # Build a more complex mesh with the notch
+            # We'll create the wing as three boxes stacked vertically
+            verts = []
+            indices = []
+            vert_offset = 0
+
+            def add_box(x_min, x_max, y_min, y_max, z_min, z_max, verts, indices, offset):
+                """Add a box to the mesh."""
+                box_verts = [
+                    # Top face
+                    [x_min, y_max, z_min], [x_min, y_max, z_max], [x_max, y_max, z_max], [x_max, y_max, z_min],
+                    # Bottom face
+                    [x_min, y_min, z_min], [x_min, y_min, z_max], [x_max, y_min, z_max], [x_max, y_min, z_min],
+                    # Back face
+                    [x_min, y_min, z_min], [x_min, y_max, z_min], [x_max, y_max, z_min], [x_max, y_min, z_min],
+                    # Front face
+                    [x_min, y_min, z_max], [x_min, y_max, z_max], [x_max, y_max, z_max], [x_max, y_min, z_max],
+                    # Left face
+                    [x_min, y_min, z_min], [x_min, y_min, z_max], [x_min, y_max, z_max], [x_min, y_max, z_min],
+                    # Right face
+                    [x_max, y_min, z_min], [x_max, y_min, z_max], [x_max, y_max, z_max], [x_max, y_max, z_min]
+                ]
+                verts.extend(box_verts)
+
+                for i in range(0, 24, 4):
+                    indices.append([offset + i, offset + i + 2, offset + i + 1])
+                    indices.append([offset + i, offset + i + 3, offset + i + 2])
+
+                return offset + 24
+
+            # Top section (above notch) - full thickness
+            if notch_top < h:
+                vert_offset = add_box(-w, w, notch_top, h, -t, t, verts, indices, vert_offset)
+
+            # Notch section (thin) - reduced thickness
+            vert_offset = add_box(-w, w, notch_bottom, notch_top, -notch_thickness, notch_thickness, verts, indices, vert_offset)
+
+            # Bottom section (below notch) - full thickness
+            if notch_bottom > -h:
+                vert_offset = add_box(-w, w, -h, notch_bottom, -t, t, verts, indices, vert_offset)
+
+            mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+            mesh.setIndices(numpy.asarray(indices, dtype=numpy.int32))
 
         mesh.calculateNormals()
         return mesh
+
+    def _checkWingCollision(self, parent: CuraSceneNode, wing_position: Vector,
+                            wing_width: float, wing_thickness: float, wing_height: float) -> dict:
+        """Check if the proposed wing would collide with the parent model.
+
+        Returns a dict with:
+        - 'collides': bool - whether collision detected
+        - 'message': str - description of the collision
+        - 'suggested_adjustment': Vector or None - suggested position adjustment
+        """
+        try:
+            # Get parent mesh bounding box
+            parent_bbox = parent.getBoundingBox()
+            if not parent_bbox:
+                Logger.log("w", "Could not get parent bounding box for collision check")
+                return {"collides": False, "message": "", "suggested_adjustment": None}
+
+            # Calculate wing bounding box at the proposed position
+            half_width = wing_width / 2
+            half_thickness = wing_thickness / 2
+            half_height = wing_height / 2
+
+            wing_min_x = wing_position.x - half_width
+            wing_max_x = wing_position.x + half_width
+            wing_min_y = wing_position.y - half_height
+            wing_max_y = wing_position.y + half_height
+            wing_min_z = wing_position.z - half_thickness
+            wing_max_z = wing_position.z + half_thickness
+
+            # Get parent bounding box extents
+            parent_min = parent_bbox.minimum
+            parent_max = parent_bbox.maximum
+
+            Logger.log("d", f"Wing bbox: X[{wing_min_x:.2f}, {wing_max_x:.2f}], "
+                          f"Y[{wing_min_y:.2f}, {wing_max_y:.2f}], Z[{wing_min_z:.2f}, {wing_max_z:.2f}]")
+            Logger.log("d", f"Parent bbox: min={parent_min}, max={parent_max}")
+
+            # Check for bounding box intersection
+            x_overlap = wing_min_x < parent_max.x and wing_max_x > parent_min.x
+            y_overlap = wing_min_y < parent_max.y and wing_max_y > parent_min.y
+            z_overlap = wing_min_z < parent_max.z and wing_max_z > parent_min.z
+
+            if x_overlap and y_overlap and z_overlap:
+                # Bounding boxes overlap - potential collision
+                # Calculate how much the wing is inside the parent
+                x_penetration = min(wing_max_x - parent_min.x, parent_max.x - wing_min_x)
+                z_penetration = min(wing_max_z - parent_min.z, parent_max.z - wing_min_z)
+
+                # Suggest moving the wing outward (in X or Z direction)
+                # Choose the direction with less penetration
+                if x_penetration < z_penetration:
+                    # Move in X direction
+                    if wing_position.x < (parent_min.x + parent_max.x) / 2:
+                        # Wing is on the left, move further left
+                        adjustment = Vector(-x_penetration - 1.0, 0, 0)
+                    else:
+                        # Wing is on the right, move further right
+                        adjustment = Vector(x_penetration + 1.0, 0, 0)
+                else:
+                    # Move in Z direction
+                    if wing_position.z < (parent_min.z + parent_max.z) / 2:
+                        adjustment = Vector(0, 0, -z_penetration - 1.0)
+                    else:
+                        adjustment = Vector(0, 0, z_penetration + 1.0)
+
+                return {
+                    "collides": True,
+                    "message": f"Wing would intersect with model (X overlap: {x_overlap}, Z overlap: {z_overlap})",
+                    "suggested_adjustment": adjustment
+                }
+
+            return {"collides": False, "message": "", "suggested_adjustment": None}
+
+        except Exception as e:
+            Logger.log("e", f"Error checking wing collision: {e}")
+            return {"collides": False, "message": "", "suggested_adjustment": None}
 
     def _createAttachedWing(self, parent: CuraSceneNode, position: Vector):
         """Create an attached stability wing at the clicked position.
@@ -809,16 +1009,22 @@ class MySupportImprover(Tool):
                 wing_height = self._wing_width  # Use width setting for horizontal extent
                 wing_center_z = actual_z
 
-            # Create the wing mesh
+            # Create the wing mesh (with optional break-line)
             wing_mesh = self._createWingMesh(
                 width=self._wing_width,
                 thickness=self._wing_thickness,
-                height=wing_height
+                height=wing_height,
+                breakline_enable=self._wing_breakline_enable,
+                breakline_depth=self._wing_breakline_depth,
+                breakline_position=self._wing_breakline_position
             )
 
             # Create scene node
             node = CuraSceneNode()
-            node.setName("Stability Wing")
+            wing_name = "Stability Wing"
+            if self._wing_breakline_enable:
+                wing_name += " (with break-line)"
+            node.setName(wing_name)
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
             node.setMeshData(wing_mesh.build())
@@ -842,18 +1048,62 @@ class MySupportImprover(Tool):
                 # Horizontal mode - position at click point
                 wing_position = position
 
-            Logger.log("d", f"Wing position: {wing_position}, height: {wing_height}")
+            Logger.log("d", f"Initial wing position: {wing_position}, height: {wing_height}")
+
+            # Check for collision with parent model
+            collision_result = self._checkWingCollision(
+                parent, wing_position,
+                self._wing_width, self._wing_thickness, wing_height
+            )
+
+            if collision_result["collides"]:
+                Logger.log("w", f"Wing collision detected: {collision_result['message']}")
+
+                if collision_result["suggested_adjustment"]:
+                    # Auto-adjust position to avoid collision
+                    adjustment = collision_result["suggested_adjustment"]
+                    wing_position = Vector(
+                        wing_position.x + adjustment.x,
+                        wing_position.y + adjustment.y,
+                        wing_position.z + adjustment.z
+                    )
+                    Logger.log("i", f"Adjusted wing position to: {wing_position}")
+
+                    # Verify the adjustment resolved the collision
+                    recheck = self._checkWingCollision(
+                        parent, wing_position,
+                        self._wing_width, self._wing_thickness, wing_height
+                    )
+                    if recheck["collides"]:
+                        Logger.log("w", "Wing still collides after adjustment - placing anyway")
+                        node.setName("Stability Wing (collision)")
+                    else:
+                        node.setName("Stability Wing (adjusted)")
+                else:
+                    Logger.log("w", "No adjustment suggested - placing wing anyway")
+                    node.setName("Stability Wing (collision)")
+
+            Logger.log("d", f"Final wing position: {wing_position}")
 
             # Add to scene
             op = GroupedOperation()
             op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
             op.addOperation(SetParentOperation(node, parent))
             op.addOperation(TranslateOperation(node, wing_position, set_position=True))
+
+            # Apply rotation if specified
+            if abs(self._wing_rotation) > 0.1:
+                # Create rotation quaternion around Y axis (vertical)
+                rotation_radians = math.radians(self._wing_rotation)
+                rotation_quaternion = Quaternion.fromAngleAxis(rotation_radians, Vector(0, 1, 0))
+                op.addOperation(RotateOperation(node, rotation_quaternion))
+                Logger.log("d", f"Applied rotation of {self._wing_rotation} degrees")
+
             op.push()
 
             CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node)
 
-            Logger.log("i", f"Attached wing created successfully (mode: {self._wing_direction})")
+            Logger.log("i", f"Attached wing created successfully (mode: {self._wing_direction}, rotation: {self._wing_rotation}°)")
 
         except Exception as e:
             Logger.log("e", f"Error creating attached wing: {e}")
