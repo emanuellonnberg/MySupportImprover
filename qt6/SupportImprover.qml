@@ -750,7 +750,7 @@ Item {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
             visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             height: visible ? implicitHeight : 0
-            
+
             TextField {
                 id: presetNameField
                 width: 120
@@ -772,6 +772,213 @@ Item {
                         UM.ActiveTool.triggerActionWithData("savePreset", presetNameField.text)
                         presetNameField.text = ""  // Clear the field after saving
                     }
+                }
+            }
+        }
+
+        // Single Region Mode Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: singleRegionCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SingleRegion") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("SingleRegion", checked)
+                        // Disable other modes when single region is enabled
+                        if (checked) {
+                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                UM.ActiveTool.setProperty("AutoDetect", false)
+                            }
+                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                UM.ActiveTool.setProperty("ExportMode", false)
+                            }
+                        }
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: singleRegionCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: singleRegionCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: singleRegionCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Single Region (Fast)")
+                    font: UM.Theme.getFont("default")
+                    color: singleRegionCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: singleRegionCheckbox.indicator.width + singleRegionCheckbox.spacing
+                }
+            }
+        }
+
+        // Auto Detect All Regions Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: autoDetectCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("AutoDetect") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("AutoDetect", checked)
+                        // Disable other modes when auto-detect is enabled
+                        if (checked) {
+                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                UM.ActiveTool.setProperty("SingleRegion", false)
+                            }
+                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                UM.ActiveTool.setProperty("ExportMode", false)
+                            }
+                        }
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: autoDetectCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: autoDetectCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: autoDetectCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Auto-Detect All Regions")
+                    font: UM.Theme.getFont("default")
+                    color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: autoDetectCheckbox.indicator.width + autoDetectCheckbox.spacing
+                }
+            }
+        }
+
+        // Sharp Feature Detection Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: sharpFeaturesCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectSharpFeatures") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("DetectSharpFeatures", checked)
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: sharpFeaturesCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: sharpFeaturesCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: sharpFeaturesCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Detect Sharp Features (auto-detect mode)")
+                    font: UM.Theme.getFont("default")
+                    color: sharpFeaturesCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: sharpFeaturesCheckbox.indicator.width + sharpFeaturesCheckbox.spacing
+                }
+            }
+        }
+
+        // Export Mode Checkbox
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: exportModeCheckbox
+                height: UM.Theme.getSize("setting_control").height
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ExportMode") : false
+                onToggled: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("ExportMode", checked)
+                        // Disable other modes when export mode is enabled
+                        if (checked) {
+                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                UM.ActiveTool.setProperty("AutoDetect", false)
+                            }
+                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                UM.ActiveTool.setProperty("SingleRegion", false)
+                            }
+                        }
+                    }
+                }
+
+                indicator: Rectangle {
+                    implicitWidth: 20
+                    implicitHeight: 20
+                    x: exportModeCheckbox.leftPadding
+                    y: parent.height / 2 - height / 2
+                    radius: 3
+                    border.color: exportModeCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    border.width: 1
+                    color: "transparent"
+
+                    Rectangle {
+                        width: 12
+                        height: 12
+                        x: 4
+                        y: 4
+                        radius: 2
+                        color: UM.Theme.getColor("primary")
+                        visible: exportModeCheckbox.checked
+                    }
+                }
+
+                contentItem: Label {
+                    text: catalog.i18nc("@label", "Export Mode (click to save mesh data)")
+                    font: UM.Theme.getFont("default")
+                    color: exportModeCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: exportModeCheckbox.indicator.width + exportModeCheckbox.spacing
                 }
             }
         }

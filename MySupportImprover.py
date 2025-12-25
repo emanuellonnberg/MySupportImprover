@@ -140,9 +140,16 @@ class MySupportImprover(Tool):
         self._wing_breakline_position = 2.0  # mm - distance from top of wing
         self._wing_rotation = 0.0  # degrees - rotation around vertical axis
 
+        # Export/auto-detect settings
+        self._export_mode = False  # Export mesh data mode
+        self._auto_detect = False  # Automatic overhang detection mode (all regions)
+        self._single_region = False  # Single region mode (fast, one region only)
+        self._detect_sharp_features = False  # Sharp feature detection mode (for pointy things)
+
         self.setExposedProperties(
             "CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets",
             "SupportAngle", "CurrentPreset", "IsCustom",
+            "ExportMode", "AutoDetect", "SingleRegion", "DetectSharpFeatures",
             # Support mode properties
             "SupportMode", "SupportModes", "SupportPattern", "SupportInfillRate",
             "SupportLineWidth", "SupportWallCount", "SupportInterfaceEnable",
@@ -468,6 +475,67 @@ class MySupportImprover(Tool):
     def applySupportMode(self, mode: str) -> None:
         """Apply a support mode preset. Called from QML."""
         self.setSupportMode(mode)
+    def getExportMode(self) -> bool:
+        return self._export_mode
+
+    def setExportMode(self, value: bool) -> None:
+        if value != self._export_mode:
+            self._export_mode = value
+            if value:
+                Logger.log("i", "Export mode ENABLED - click on mesh to export data")
+            else:
+                Logger.log("i", "Export mode DISABLED - normal operation")
+            self.propertyChanged.emit()
+
+    ExportMode = pyqtProperty(bool, fget=getExportMode, fset=setExportMode)
+
+    def getAutoDetect(self) -> bool:
+        return self._auto_detect
+
+    def setAutoDetect(self, value: bool) -> None:
+        if value != self._auto_detect:
+            self._auto_detect = value
+            if value:
+                Logger.log("i", "Auto-detect mode ENABLED - click to detect all overhang regions")
+                # Disable single region mode
+                if self._single_region:
+                    self._single_region = False
+            else:
+                Logger.log("i", "Auto-detect mode DISABLED")
+            self.propertyChanged.emit()
+
+    AutoDetect = pyqtProperty(bool, fget=getAutoDetect, fset=setAutoDetect)
+
+    def getSingleRegion(self) -> bool:
+        return self._single_region
+
+    def setSingleRegion(self, value: bool) -> None:
+        if value != self._single_region:
+            self._single_region = value
+            if value:
+                Logger.log("i", "Single region mode ENABLED - click to detect one overhang region (fast)")
+                # Disable auto-detect mode
+                if self._auto_detect:
+                    self._auto_detect = False
+            else:
+                Logger.log("i", "Single region mode DISABLED")
+            self.propertyChanged.emit()
+
+    SingleRegion = pyqtProperty(bool, fget=getSingleRegion, fset=setSingleRegion)
+
+    def getDetectSharpFeatures(self) -> bool:
+        return self._detect_sharp_features
+
+    def setDetectSharpFeatures(self, value: bool) -> None:
+        if value != self._detect_sharp_features:
+            self._detect_sharp_features = value
+            if value:
+                Logger.log("i", "Sharp feature detection ENABLED - will detect pointy features that need support")
+            else:
+                Logger.log("i", "Sharp feature detection DISABLED")
+            self.propertyChanged.emit()
+
+    DetectSharpFeatures = pyqtProperty(bool, fget=getDetectSharpFeatures, fset=setDetectSharpFeatures)
 
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
@@ -497,6 +565,45 @@ class MySupportImprover(Tool):
             picked_node = self._controller.getScene().findObject(self._selection_pass.getIdAtPosition(event.x, event.y))
             if not picked_node:
                 # There is no slicable object at the picked location
+                return
+
+            # EXPORT MODE: Export mesh for debugging
+            if self._export_mode:
+                Logger.log("i", "Export mode active - exporting mesh data for analysis")
+
+                # Get the clicked position in 3D space
+                active_camera = self._controller.getScene().getActiveCamera()
+                picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+                picking_pass.render()
+                picked_position = picking_pass.getPickedPosition(event.x, event.y)
+
+                self._exportMeshData(picked_node, picked_position)
+                return
+
+            # SINGLE REGION MODE: Fast detection of one overhang region under click
+            if self._single_region:
+                Logger.log("i", "Single region mode active - detecting one overhang region (fast)")
+
+                # Get the clicked position in 3D space
+                active_camera = self._controller.getScene().getActiveCamera()
+                picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+                picking_pass.render()
+                picked_position = picking_pass.getPickedPosition(event.x, event.y)
+
+                self._detectSingleRegion(picked_node, picked_position)
+                return
+
+            # AUTO-DETECT MODE: Automatically detect all overhang regions
+            if self._auto_detect:
+                Logger.log("i", "Auto-detect mode active - detecting all overhang regions")
+
+                # Get the clicked position in 3D space (optional - for validation)
+                active_camera = self._controller.getScene().getActiveCamera()
+                picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+                picking_pass.render()
+                picked_position = picking_pass.getPickedPosition(event.x, event.y)
+
+                self._autoDetectOverhangs(picked_node, None)  # None = detect all regions
                 return
 
             node_stack = picked_node.callDecoration("getStack")
@@ -615,10 +722,14 @@ class MySupportImprover(Tool):
             else:
                 Logger.log("e", "Setting became invalid after change.")
             
-    def _createModifierVolume(self, parent: CuraSceneNode, position: Vector): 
+    def _createModifierVolume(self, parent: CuraSceneNode, position: Vector):
+        """Create a modifier volume using the default cube dimensions from properties"""
+        self._createModifierVolumeWithSize(parent, position, self._cube_x, self._cube_y, self._cube_z)
+
+    def _createModifierVolumeWithSize(self, parent: CuraSceneNode, position: Vector, size_x: float, size_y: float, size_z: float):
         try:
             node = CuraSceneNode()
-            
+
             Logger.log("d", "Creating modifier volume node...")
         
             # Name the node based on support mode for easy identification
@@ -631,15 +742,10 @@ class MySupportImprover(Tool):
             node.setSelectable(True)
             node.setCalculateBoundingBox(True)
 
-            # Get cube dimensions from properties
-            cube_x = self._cube_x
-            cube_y = self._cube_y
-            cube_z = self._cube_z
-            
-            Logger.log("d", f"Creating cube with dimensions: X={cube_x}, Y={cube_y}, Z={cube_z}")
-            
+            Logger.log("d", f"Creating cube with dimensions: X={size_x}, Y={size_y}, Z={size_z}")
+
             # Create cube with the specified dimensions
-            mesh = self._createCube(cube_x, cube_y, cube_z)
+            mesh = self._createCube(size_x, size_y, size_z)
             node.setMeshData(mesh.build())
             node.calculateBoundingBoxMesh()
 
@@ -785,7 +891,7 @@ class MySupportImprover(Tool):
     def _createCube(self, size_x, size_y, size_z):
         mesh = MeshBuilder()
         s_x = size_x / 2
-        s_y = size_y / 2  
+        s_y = size_y / 2
         s_z = size_z / 2
 
         # Switched Y and Z coordinates order to fix dimensions
@@ -1123,12 +1229,1013 @@ class MySupportImprover(Tool):
 
             CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node)
 
-            Logger.log("i", f"Attached wing created successfully (mode: {self._wing_direction}, rotation: {self._wing_rotation}°)")
+            Logger.log("i", f"Attached wing created successfully (mode: {self._wing_direction}, rotation: {self._wing_rotation}Â°)")
 
         except Exception as e:
             Logger.log("e", f"Error creating attached wing: {e}")
             import traceback
             Logger.log("e", traceback.format_exc())
+
+
+    def _exportMeshData(self, node: CuraSceneNode, picked_position: Vector = None):
+        """Export mesh data to files for external analysis"""
+        import struct
+        import time
+
+        if not node or not node.getMeshData():
+            Logger.log("e", "No mesh data available to export")
+            return
+
+        try:
+            # Get transformed mesh data (with position/rotation applied)
+            mesh_data = node.getMeshData().getTransformed(node.getWorldTransformation())
+
+            # Get mesh arrays
+            vertices = mesh_data.getVertices()
+            has_indices = mesh_data.hasIndices()
+
+            if has_indices:
+                indices = mesh_data.getIndices()
+            else:
+                Logger.log("w", "Mesh has no indices - vertices only")
+                indices = None
+
+            # Log mesh info
+            Logger.log("i", "=== MESH DATA EXPORT ===")
+            Logger.log("i", f"Node name: {node.getName()}")
+            Logger.log("i", f"Vertices: {len(vertices)}")
+            Logger.log("i", f"Has indices: {has_indices}")
+            if has_indices:
+                Logger.log("i", f"Faces: {len(indices)}")
+
+            # Log clicked position if available
+            if picked_position:
+                Logger.log("i", f"Clicked position: [{picked_position.x:.2f}, {picked_position.y:.2f}, {picked_position.z:.2f}]")
+
+            # Create output directory
+            output_dir = os.path.expanduser("~/MySupportImprover_exports")
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate filename with timestamp
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            base_filename = f"mesh_{node.getName()}_{timestamp}"
+
+            # Export to STL (binary format)
+            stl_path = os.path.join(output_dir, f"{base_filename}.stl")
+            self._exportToSTL(mesh_data, stl_path)
+            Logger.log("i", f"Exported STL to: {stl_path}")
+
+            # Export to JSON (detailed data)
+            json_path = os.path.join(output_dir, f"{base_filename}.json")
+            self._exportToJSON(mesh_data, node, json_path, picked_position)
+            Logger.log("i", f"Exported JSON to: {json_path}")
+
+            Logger.log("i", f"=== EXPORT COMPLETE ===")
+            Logger.log("i", f"Files saved to: {output_dir}")
+
+        except Exception as e:
+            Logger.log("e", f"Failed to export mesh data: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
+    def _exportToSTL(self, mesh_data, filepath):
+        """Export mesh to binary STL format"""
+        import struct
+
+        vertices = mesh_data.getVertices()
+
+        if mesh_data.hasIndices():
+            indices = mesh_data.getIndices()
+        else:
+            # Create indices for non-indexed mesh
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        with open(filepath, 'wb') as f:
+            # 80-byte header
+            header = b'Binary STL exported from MySupportImprover'
+            header = header.ljust(80, b'\x00')
+            f.write(header)
+
+            # Face count
+            face_count = len(indices)
+            f.write(struct.pack("<I", int(face_count)))
+
+            # Write triangles
+            for face in indices:
+                try:
+                    v0 = vertices[face[0]]
+                    v1 = vertices[face[1]]
+                    v2 = vertices[face[2]]
+
+                    # Calculate normal
+                    edge1 = v1 - v0
+                    edge2 = v2 - v0
+                    normal = numpy.cross(edge1, edge2)
+                    normal_length = numpy.linalg.norm(normal)
+                    if normal_length > 1e-10:
+                        normal = normal / normal_length
+                    else:
+                        normal = numpy.array([0.0, 0.0, 1.0])
+
+                    # Write normal
+                    f.write(struct.pack("<fff", float(normal[0]), float(normal[1]), float(normal[2])))
+                    # Write vertices
+                    f.write(struct.pack("<fff", float(v0[0]), float(v0[1]), float(v0[2])))
+                    f.write(struct.pack("<fff", float(v1[0]), float(v1[1]), float(v1[2])))
+                    f.write(struct.pack("<fff", float(v2[0]), float(v2[1]), float(v2[2])))
+                    # Attribute byte count
+                    f.write(struct.pack("<H", 0))
+                except Exception as e:
+                    Logger.log("e", f"Error writing face: {e}")
+
+    def _exportToJSON(self, mesh_data, node, filepath, picked_position: Vector = None):
+        """Export detailed mesh data to JSON"""
+        vertices = mesh_data.getVertices()
+
+        data = {
+            "node_name": node.getName(),
+            "vertex_count": len(vertices),
+            "has_indices": mesh_data.hasIndices(),
+            "vertices": vertices.tolist(),
+        }
+
+        if mesh_data.hasIndices():
+            indices = mesh_data.getIndices()
+            data["face_count"] = len(indices)
+            data["indices"] = indices.tolist()
+
+        if mesh_data.hasNormals():
+            normals = mesh_data.getNormals()
+            data["normals"] = normals.tolist()
+
+        # Add bounding box info
+        data["bounds"] = {
+            "min": vertices.min(axis=0).tolist(),
+            "max": vertices.max(axis=0).tolist(),
+            "center": vertices.mean(axis=0).tolist()
+        }
+
+        # Add clicked position if available
+        if picked_position:
+            click_pos = numpy.array([picked_position.x, picked_position.y, picked_position.z])
+            data["clicked_position"] = click_pos.tolist()
+
+            # Find closest face to clicked position
+            if mesh_data.hasIndices():
+                closest_face_id, closest_distance = self._findClosestFace(vertices, indices, click_pos)
+                data["closest_face_id"] = int(closest_face_id)
+                data["closest_face_distance"] = float(closest_distance)
+
+                # Get the vertices of the closest face
+                closest_face_indices = indices[closest_face_id]
+                closest_face_vertices = [
+                    vertices[closest_face_indices[0]].tolist(),
+                    vertices[closest_face_indices[1]].tolist(),
+                    vertices[closest_face_indices[2]].tolist()
+                ]
+                data["closest_face_vertices"] = closest_face_vertices
+
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def _findClosestFace(self, vertices, indices, point):
+        """Find the closest face to a given point"""
+        min_distance = float('inf')
+        closest_face_id = 0
+
+        for face_id, face in enumerate(indices):
+            # Get face vertices
+            v0 = vertices[face[0]]
+            v1 = vertices[face[1]]
+            v2 = vertices[face[2]]
+
+            # Calculate face center (centroid)
+            face_center = (v0 + v1 + v2) / 3.0
+
+            # Calculate distance from point to face center
+            distance = numpy.linalg.norm(face_center - point)
+
+            if distance < min_distance:
+                min_distance = distance
+                closest_face_id = face_id
+
+        return closest_face_id, min_distance
+
+    def _findClickedRegion(self, picked_position, regions, vertices_local, indices, world_transform):
+        """Find which overhang region contains the clicked position
+
+        Args:
+            picked_position: World-space position where user clicked
+            regions: List of overhang regions (each is a list of face IDs)
+            vertices_local: Vertex positions in local space
+            indices: Face indices
+            world_transform: Transformation to convert local to world space
+
+        Returns:
+            Region index if found, None otherwise
+        """
+        # Convert picked position to local space
+        inverse_transform = world_transform.getInverse()
+        picked_local = picked_position.preMultiply(inverse_transform)
+        picked_point = numpy.array([picked_local.x, picked_local.y, picked_local.z])
+
+        # Find closest face to clicked position
+        closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
+
+        Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
+
+        # Find which region contains this face
+        for region_id, region_faces in enumerate(regions):
+            if closest_face_id in region_faces:
+                return region_id
+
+        return None
+
+    def _detectSingleRegion(self, node: CuraSceneNode, picked_position: Vector):
+        """Fast detection of a single overhang region under the click position
+
+        This is much faster than full auto-detect because it:
+        1. Only checks faces near the click
+        2. Only finds one connected region
+        3. Doesn't analyze the entire mesh
+        """
+        if not node or not node.getMeshData():
+            Logger.log("e", "No mesh data available for overhang detection")
+            return
+
+        try:
+            Logger.log("i", "=== SINGLE REGION DETECTION ===")
+
+            # Get mesh data in LOCAL space
+            mesh_data = node.getMeshData()
+            vertices_local = mesh_data.getVertices()
+            world_transform = node.getWorldTransformation()
+
+            # Handle non-indexed meshes
+            if not mesh_data.hasIndices():
+                Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
+                vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
+            else:
+                indices = mesh_data.getIndices()
+
+            Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
+
+            # Convert clicked position to local space
+            inverse_transform = world_transform.getInverse()
+            picked_local = picked_position.preMultiply(inverse_transform)
+            picked_point = numpy.array([picked_local.x, picked_local.y, picked_local.z])
+
+            # Find closest face to click
+            closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
+            Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
+
+            # Build adjacency graph for ALL faces (needed for BFS)
+            Logger.log("i", "Building face adjacency graph...")
+            adjacency = self._buildAdjacencyGraph(indices)
+
+            # Check if this face is an overhang
+            start_face_id = closest_face_id
+            if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._support_angle, world_transform):
+                Logger.log("i", "Clicked face is not an overhang - searching nearby for overhang faces...")
+
+                # Search nearby faces (BFS up to 20 levels deep) for an overhang
+                # This helps find overhangs even when clicking on non-overhang faces of a dangling feature
+                start_face_id = self._findNearbyOverhang(closest_face_id, vertices_local, indices, adjacency,
+                                                         self._support_angle, world_transform, max_depth=20)
+
+                if start_face_id is None:
+                    Logger.log("w", "No overhang faces found near click position - no blocker created")
+                    return
+
+                Logger.log("i", f"Found overhang face {start_face_id} near click position")
+            else:
+                Logger.log("i", "Clicked face is an overhang")
+
+            Logger.log("i", "Finding connected overhang region (including near-threshold faces)...")
+
+            # Do BFS from start face to find overhang faces AND near-threshold faces
+            # This captures the entire dangling feature, not just the strict overhangs
+            region_faces = self._findConnectedOverhangRegionExpanded(
+                start_face_id, vertices_local, indices, adjacency,
+                self._support_angle, world_transform, angle_margin=10.0
+            )
+
+            Logger.log("i", f"Found connected overhang region with {len(region_faces)} faces")
+
+            if len(region_faces) < 10:
+                Logger.log("w", f"Region too small ({len(region_faces)} faces) - no blocker created")
+                return
+
+            # Calculate region bounds and create blocker
+            region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
+            min_bounds, max_bounds = region_bounds
+
+            # Calculate dimensions with padding
+            region_size = max_bounds - min_bounds
+            padding_factor = 1.4
+            padded_size_x = max(1.0, float(region_size[0] * padding_factor))
+            padded_size_y = max(1.0, float(region_size[1] * padding_factor))
+            padded_size_z = max(1.0, float(region_size[2] * padding_factor))
+
+            # Position volume so its TOP is at the highest point of the region
+            # This ensures the dangling part only intersects the top of the volume
+            # Volume position is at its center, so: center_y = max_y - size_y/2
+            position_local_x = (min_bounds[0] + max_bounds[0]) / 2.0  # Center in X
+            position_local_y = max_bounds[1] - (padded_size_y / 2.0)  # Top at max Y
+            position_local_z = (min_bounds[2] + max_bounds[2]) / 2.0  # Center in Z
+
+            # Transform to world space
+            position_local_vec = Vector(position_local_x, position_local_y, position_local_z)
+            position_world = position_local_vec.preMultiply(world_transform)
+
+            # Create blocker
+            self._createModifierVolumeWithSize(node, position_world, padded_size_x, padded_size_y, padded_size_z)
+
+            Logger.log("i", f"Created support blocker for region ({len(region_faces)} faces) at world pos: [{position_world.x:.2f}, {position_world.y:.2f}, {position_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
+            Logger.log("d", f"Region bounds: min_y={min_bounds[1]:.2f}, max_y={max_bounds[1]:.2f}, volume top at y={max_bounds[1]:.2f}")
+
+        except Exception as e:
+            Logger.log("e", f"Failed to detect single region: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
+    def _autoDetectOverhangs(self, node: CuraSceneNode, picked_position: Vector = None):
+        """Automatically detect overhangs and create support blockers
+
+        Args:
+            node: The scene node to analyze
+            picked_position: Optional clicked position - if provided, only create blocker for clicked region
+        """
+        if not node or not node.getMeshData():
+            Logger.log("e", "No mesh data available for overhang detection")
+            return
+
+        try:
+            Logger.log("i", "=== AUTO OVERHANG DETECTION ===")
+
+            # Get mesh data in LOCAL space (not transformed)
+            mesh_data = node.getMeshData()
+            vertices_local = mesh_data.getVertices()
+
+            # Get transformation matrix to transform normals to world space for overhang detection
+            world_transform = node.getWorldTransformation()
+
+            # Handle non-indexed meshes
+            if not mesh_data.hasIndices():
+                Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
+                vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
+            else:
+                indices = mesh_data.getIndices()
+
+            Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
+
+            # Detect overhang faces (pass transformation to handle rotation)
+            overhang_face_ids = self._detectOverhangFaces(vertices_local, indices, self._support_angle, world_transform)
+            Logger.log("i", f"Found {len(overhang_face_ids)} overhang faces")
+
+            if len(overhang_face_ids) == 0:
+                Logger.log("i", "No overhangs detected")
+                return
+
+            # Find connected regions
+            regions = self._findConnectedRegions(vertices_local, indices, overhang_face_ids)
+            Logger.log("i", f"Found {len(regions)} connected overhang regions")
+
+            # Apply sharp feature detection if enabled
+            if self._detect_sharp_features:
+                Logger.log("i", "Sharp feature detection enabled - analyzing vertex curvature...")
+                sharp_vertices = self._detectSharpVertices(vertices_local, indices, curvature_threshold=2.0)
+                if len(sharp_vertices) > 0:
+                    Logger.log("i", f"Detected {len(sharp_vertices)} sharp vertices - expanding regions...")
+                    regions = self._expandRegionsWithSharpFeatures(vertices_local, indices, regions,
+                                                                   sharp_vertices, expansion_radius=5.0)
+                    Logger.log("i", f"After sharp feature expansion: {len(regions)} total regions")
+
+            # If clicked position provided, find which region was clicked
+            target_region_id = None
+            if picked_position:
+                target_region_id = self._findClickedRegion(picked_position, regions, vertices_local, indices, world_transform)
+                if target_region_id is not None:
+                    Logger.log("i", f"Clicked on region {target_region_id + 1} - will create blocker only for this region")
+                else:
+                    Logger.log("w", "Click position not in any overhang region - creating blockers for all regions")
+
+            # Create support blockers
+            min_faces = 10
+            created_count = 0
+
+            for region_id, region_faces in enumerate(regions):
+                # If we have a target region, skip all others
+                if target_region_id is not None and region_id != target_region_id:
+                    continue
+
+                if len(region_faces) >= min_faces:
+                    # Calculate region center and bounds in LOCAL space
+                    region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
+                    min_bounds, max_bounds = region_bounds
+
+                    # Calculate region dimensions in local space
+                    region_size = max_bounds - min_bounds
+
+                    # Add padding (20% on each side)
+                    padding_factor = 1.4  # 20% padding on each side = 1.4x total size
+                    padded_size_x = float(region_size[0] * padding_factor)
+                    padded_size_y = float(region_size[1] * padding_factor)
+                    padded_size_z = float(region_size[2] * padding_factor)
+
+                    # Ensure minimum size of 1mm
+                    padded_size_x = max(1.0, padded_size_x)
+                    padded_size_y = max(1.0, padded_size_y)
+                    padded_size_z = max(1.0, padded_size_z)
+
+                    # Transform region center to WORLD space (like manual click positions)
+                    center_local_vec = Vector(region_center_local[0], region_center_local[1], region_center_local[2])
+                    center_world = center_local_vec.preMultiply(world_transform)
+
+                    # Create a support blocker sized to fit the region
+                    self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
+                    created_count += 1
+
+                    Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
+
+            Logger.log("i", f"=== CREATED {created_count} SUPPORT BLOCKERS ===")
+
+        except Exception as e:
+            Logger.log("e", f"Failed to auto-detect overhangs: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
+
+    def _rebuildIndexedMesh(self, vertices):
+        """Rebuild index buffer for non-indexed mesh by merging duplicate vertices"""
+        Logger.log("i", f"Rebuilding indices from {len(vertices)} vertices...")
+
+        vertex_map = {}
+        unique_vertices = []
+        indices = []
+        tolerance = 1e-6
+
+        for i in range(0, len(vertices), 3):
+            triangle_indices = []
+            for j in range(3):
+                if i + j >= len(vertices):
+                    break
+                v = vertices[i + j]
+                v_key = tuple(numpy.round(v / tolerance) * tolerance)
+
+                if v_key in vertex_map:
+                    triangle_indices.append(vertex_map[v_key])
+                else:
+                    vertex_idx = len(unique_vertices)
+                    unique_vertices.append(v)
+                    vertex_map[v_key] = vertex_idx
+                    triangle_indices.append(vertex_idx)
+
+            if len(triangle_indices) == 3:
+                indices.append(triangle_indices)
+
+        unique_vertices = numpy.array(unique_vertices, dtype=numpy.float32)
+        indices = numpy.array(indices, dtype=numpy.int32)
+
+        reduction = 100 * (1 - len(unique_vertices)/len(vertices))
+        Logger.log("i", f"Vertex reduction: {reduction:.1f}% ({len(vertices)} â†’ {len(unique_vertices)})")
+
+        return unique_vertices, indices
+
+    def _isFaceOverhang(self, vertices, indices, face_id, threshold_angle, transform=None):
+        """Check if a single face is an overhang"""
+        face = indices[face_id]
+        v0 = vertices[face[0]]
+        v1 = vertices[face[1]]
+        v2 = vertices[face[2]]
+
+        # Calculate normal
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal_local = numpy.cross(edge1, edge2)
+        normal_length = numpy.linalg.norm(normal_local)
+
+        if normal_length < 1e-10:
+            return False
+
+        normal_local = normal_local / normal_length
+
+        # Transform to world space if needed
+        if transform:
+            transform_data = transform.getData()
+            rotation_matrix = transform_data[0:3, 0:3]
+            normal_world = rotation_matrix.dot(normal_local)
+            normal_world_length = numpy.linalg.norm(normal_world)
+            if normal_world_length > 1e-10:
+                normal = normal_world / normal_world_length
+            else:
+                normal = normal_local
+        else:
+            normal = normal_local
+
+        # Check angle
+        threshold_from_up = 90.0 + threshold_angle
+        threshold_rad = numpy.deg2rad(threshold_from_up)
+        up_vector = numpy.array([0.0, 1.0, 0.0])
+        dot_product = numpy.dot(normal, up_vector)
+        angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+
+        return angle > threshold_rad
+
+    def _buildAdjacencyGraph(self, indices):
+        """Build adjacency graph for ALL faces (not just overhangs)"""
+        edge_to_faces = {}
+
+        for face_id, face in enumerate(indices):
+            edges = [
+                tuple(sorted([face[0], face[1]])),
+                tuple(sorted([face[1], face[2]])),
+                tuple(sorted([face[2], face[0]]))
+            ]
+
+            for edge in edges:
+                if edge not in edge_to_faces:
+                    edge_to_faces[edge] = []
+                edge_to_faces[edge].append(face_id)
+
+        # Build adjacency list
+        adjacency = {}
+        for edge, faces in edge_to_faces.items():
+            if len(faces) == 2:
+                f1, f2 = faces
+                if f1 not in adjacency:
+                    adjacency[f1] = []
+                if f2 not in adjacency:
+                    adjacency[f2] = []
+                adjacency[f1].append(f2)
+                adjacency[f2].append(f1)
+
+        return adjacency
+
+    def _findNearbyOverhang(self, start_face_id, vertices, indices, adjacency, threshold_angle, transform, max_depth=3):
+        """Search nearby faces for an overhang face using limited BFS
+
+        Args:
+            start_face_id: Face to start search from
+            max_depth: Maximum neighbor levels to search (default 3)
+
+        Returns:
+            Face ID of nearest overhang face, or None if not found
+        """
+        visited = set()
+        queue = [(start_face_id, 0)]  # (face_id, depth)
+        visited.add(start_face_id)
+
+        while queue:
+            current_face, depth = queue.pop(0)
+
+            # Check if current face is an overhang
+            if self._isFaceOverhang(vertices, indices, current_face, threshold_angle, transform):
+                return current_face
+
+            # Continue searching neighbors if within depth limit
+            if depth < max_depth:
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append((neighbor, depth + 1))
+
+        return None
+
+    def _findConnectedOverhangRegion(self, start_face_id, vertices, indices, adjacency, threshold_angle, transform):
+        """Find connected overhang region starting from a specific face using BFS"""
+        region = []
+        visited = set()
+        queue = [start_face_id]
+        visited.add(start_face_id)
+
+        while queue:
+            current_face = queue.pop(0)
+
+            # Check if current face is an overhang
+            if self._isFaceOverhang(vertices, indices, current_face, threshold_angle, transform):
+                region.append(current_face)
+
+                # Check neighbors
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+        return region
+
+    def _findConnectedOverhangRegionExpanded(self, start_face_id, vertices, indices, adjacency,
+                                            threshold_angle, transform, angle_margin=10.0):
+        """Find connected overhang region including near-threshold faces
+
+        This is used for single-region mode to capture entire dangling features.
+        It includes faces that are within angle_margin degrees of the support angle threshold,
+        allowing it to capture complete features even when some faces are slightly above
+        the strict overhang threshold.
+
+        Args:
+            start_face_id: Face to start BFS from
+            vertices: Vertex positions in local space
+            indices: Face indices
+            adjacency: Face adjacency graph
+            threshold_angle: Base support angle (e.g., 45Â°)
+            transform: World transformation for normal rotation
+            angle_margin: Degrees to expand beyond strict threshold (default 10Â°)
+
+        Returns:
+            List of face IDs forming the complete dangling feature
+        """
+        # Calculate expanded threshold
+        # Normal threshold: 90 + 45 = 135Â° from up
+        # With 10Â° margin: also include faces 125Â°-135Â° from up
+        expanded_threshold = threshold_angle - angle_margin
+
+        region = []
+        visited = set()
+        queue = [start_face_id]
+        visited.add(start_face_id)
+
+        while queue:
+            current_face = queue.pop(0)
+
+            # Check if face is overhang OR near-threshold (with expanded threshold)
+            if self._isFaceNearOverhang(vertices, indices, current_face, expanded_threshold, transform):
+                region.append(current_face)
+
+                # Expand to neighbors
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+        return region
+
+    def _isFaceNearOverhang(self, vertices, indices, face_id, threshold_angle, transform=None):
+        """Check if a face is at or near overhang threshold
+
+        This uses a relaxed threshold to include faces that are close to needing support,
+        helping to capture entire dangling features rather than just strict overhangs.
+
+        Args:
+            vertices: Vertex positions in local space
+            indices: Face indices
+            face_id: Face to check
+            threshold_angle: Relaxed support angle (already reduced by angle_margin)
+            transform: Optional transformation matrix to convert normals to world space
+
+        Returns:
+            True if face angle exceeds the relaxed threshold
+        """
+        face = indices[face_id]
+        v0 = vertices[face[0]]
+        v1 = vertices[face[1]]
+        v2 = vertices[face[2]]
+
+        # Calculate normal in local space
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal_local = numpy.cross(edge1, edge2)
+        normal_length = numpy.linalg.norm(normal_local)
+
+        if normal_length < 1e-10:
+            return False
+
+        normal_local = normal_local / normal_length
+
+        # Transform to world space if needed
+        if transform:
+            transform_data = transform.getData()
+            rotation_matrix = transform_data[0:3, 0:3]
+            normal_world = rotation_matrix.dot(normal_local)
+            normal_world_length = numpy.linalg.norm(normal_world)
+            if normal_world_length > 1e-10:
+                normal = normal_world / normal_world_length
+            else:
+                normal = normal_local
+        else:
+            normal = normal_local
+
+        # Check angle against relaxed threshold
+        # Note: threshold_angle passed here is already (base_threshold - margin)
+        threshold_from_up = 90.0 + threshold_angle
+        threshold_rad = numpy.deg2rad(threshold_from_up)
+        up_vector = numpy.array([0.0, 1.0, 0.0])
+        dot_product = numpy.dot(normal, up_vector)
+        angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+
+        return angle > threshold_rad
+
+    def _detectOverhangFaces(self, vertices, indices, threshold_angle, transform=None):
+        """Detect faces that are overhangs based on angle threshold
+
+        Args:
+            vertices: Vertex positions (in local space if transform is provided)
+            indices: Face indices
+            threshold_angle: Angle threshold in degrees (Cura support angle - max overhang without support)
+            transform: Optional transformation matrix to convert normals to world space
+        """
+        # Convert support angle to the angle from vertical
+        # Support angle of 45Â° means surfaces up to 45Â° from horizontal are printable
+        # This corresponds to normals at angles > (90Â° + 45Â°) = 135Â° from up vector
+        threshold_from_up = 90.0 + threshold_angle
+        threshold_rad = numpy.deg2rad(threshold_from_up)
+        overhang_faces = []
+
+        for face_id, face in enumerate(indices):
+            # Get face vertices (in local space)
+            v0 = vertices[face[0]]
+            v1 = vertices[face[1]]
+            v2 = vertices[face[2]]
+
+            # Calculate face normal (in local space)
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            normal_local = numpy.cross(edge1, edge2)
+            normal_length = numpy.linalg.norm(normal_local)
+
+            if normal_length > 1e-10:
+                normal_local = normal_local / normal_length
+
+                # Transform normal to world space if transform is provided
+                if transform:
+                    # Get rotation matrix (3x3 upper-left of 4x4 transform matrix)
+                    transform_data = transform.getData()
+                    rotation_matrix = transform_data[0:3, 0:3]
+
+                    # Apply rotation to normal (normals are direction vectors - no translation)
+                    normal_world = rotation_matrix.dot(normal_local)
+
+                    # Normalize after transformation
+                    normal_world_length = numpy.linalg.norm(normal_world)
+                    if normal_world_length > 1e-10:
+                        normal = normal_world / normal_world_length
+                    else:
+                        normal = normal_local
+                else:
+                    normal = normal_local
+
+                # Calculate angle with up vector (0, 1, 0) in world space
+                up_vector = numpy.array([0.0, 1.0, 0.0])
+                dot_product = numpy.dot(normal, up_vector)
+                angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+
+                # Check if angle exceeds threshold (surface normal points more down than threshold)
+                if angle > threshold_rad:
+                    overhang_faces.append(face_id)
+
+        return numpy.array(overhang_faces, dtype=numpy.int32)
+
+    def _findConnectedRegions(self, vertices, indices, overhang_face_ids):
+        """Find connected regions of overhang faces using BFS"""
+        # Build adjacency graph
+        adjacency = {}
+        overhang_set = set(overhang_face_ids)
+
+        # Build edge to face mapping
+        edge_to_faces = {}
+        for face_id in overhang_face_ids:
+            face = indices[face_id]
+            edges = [
+                tuple(sorted([face[0], face[1]])),
+                tuple(sorted([face[1], face[2]])),
+                tuple(sorted([face[2], face[0]]))
+            ]
+
+            for edge in edges:
+                if edge not in edge_to_faces:
+                    edge_to_faces[edge] = []
+                edge_to_faces[edge].append(face_id)
+
+        # Build adjacency list
+        for edge, faces in edge_to_faces.items():
+            if len(faces) == 2:
+                f1, f2 = faces
+                if f1 not in adjacency:
+                    adjacency[f1] = []
+                if f2 not in adjacency:
+                    adjacency[f2] = []
+                adjacency[f1].append(f2)
+                adjacency[f2].append(f1)
+
+        # Find connected regions using BFS
+        visited = set()
+        regions = []
+
+        for start_face in overhang_face_ids:
+            if start_face in visited:
+                continue
+
+            # BFS to find connected component
+            region = []
+            queue = [start_face]
+            visited.add(start_face)
+
+            while queue:
+                current_face = queue.pop(0)
+                region.append(current_face)
+
+                if current_face in adjacency:
+                    for neighbor in adjacency[current_face]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+            regions.append(region)
+
+        # Sort regions by size (largest first)
+        regions.sort(key=lambda r: len(r), reverse=True)
+
+        return regions
+
+    def _calculateRegionBounds(self, vertices, indices, region_face_ids):
+        """Calculate the center and bounds of a region"""
+        region_vertices = []
+
+        for face_id in region_face_ids:
+            face = indices[face_id]
+            region_vertices.extend([
+                vertices[face[0]],
+                vertices[face[1]],
+                vertices[face[2]]
+            ])
+
+        region_vertices = numpy.array(region_vertices)
+
+        # Calculate bounds
+        min_bounds = region_vertices.min(axis=0)
+        max_bounds = region_vertices.max(axis=0)
+        center = (min_bounds + max_bounds) / 2.0
+
+        return center, (min_bounds, max_bounds)
+
+    def _detectSharpVertices(self, vertices, indices, curvature_threshold=2.0):
+        """Detect vertices with high curvature (sharp points)
+
+        Optimized version that uses average normal deviation instead of pairwise comparison.
+        Much faster on large meshes.
+
+        Args:
+            vertices: Vertex positions in local space
+            indices: Face indices
+            curvature_threshold: Threshold for considering a vertex "sharp" (radians)
+                                Higher values = only very sharp points detected
+                                Default 2.0 radians (~115Â°) catches moderately sharp features
+
+        Returns:
+            List of vertex IDs that are sharp points
+        """
+        # Build vertex-to-faces mapping
+        vertex_faces = {}
+        for face_id, face in enumerate(indices):
+            for vertex_id in face:
+                if vertex_id not in vertex_faces:
+                    vertex_faces[vertex_id] = []
+                vertex_faces[vertex_id].append(face_id)
+
+        sharp_vertices = []
+        checked_count = 0
+
+        # Calculate curvature at each vertex (optimized version)
+        for vertex_id, face_list in vertex_faces.items():
+            if len(face_list) < 3:
+                continue
+
+            checked_count += 1
+
+            # Calculate normals for all faces touching this vertex
+            normals = []
+            for face_id in face_list:
+                face = indices[face_id]
+                v0 = vertices[face[0]]
+                v1 = vertices[face[1]]
+                v2 = vertices[face[2]]
+
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = numpy.cross(edge1, edge2)
+                normal_length = numpy.linalg.norm(normal)
+
+                if normal_length > 1e-10:
+                    normal = normal / normal_length
+                    normals.append(normal)
+
+            if len(normals) < 3:
+                continue
+
+            # OPTIMIZED: Calculate average normal, then find max deviation
+            # This is O(n) instead of O(nÂ²)
+            normals_array = numpy.array(normals)
+            avg_normal = numpy.mean(normals_array, axis=0)
+            avg_normal_length = numpy.linalg.norm(avg_normal)
+
+            if avg_normal_length > 1e-10:
+                avg_normal = avg_normal / avg_normal_length
+
+                # Find maximum deviation from average
+                max_deviation = 0.0
+                for normal in normals:
+                    dot_product = numpy.dot(normal, avg_normal)
+                    angle = numpy.arccos(numpy.clip(dot_product, -1.0, 1.0))
+                    max_deviation = max(max_deviation, angle)
+
+                # Sharp vertex if normals deviate significantly from average
+                if max_deviation > curvature_threshold / 2.0:  # Divide by 2 since we're comparing to average
+                    sharp_vertices.append(vertex_id)
+
+        Logger.log("i", f"Checked {checked_count} vertices, detected {len(sharp_vertices)} sharp vertices")
+        return sharp_vertices
+
+    def _expandRegionsWithSharpFeatures(self, vertices, indices, regions, sharp_vertices, expansion_radius=5.0):
+        """Expand overhang regions to include faces around sharp vertices
+
+        When sharp features are detected (like cone tips), include nearby faces
+        in the overhang region even if they don't meet the strict angle threshold.
+
+        Args:
+            vertices: Vertex positions in local space
+            indices: Face indices
+            regions: List of overhang regions (each is a list of face IDs)
+            sharp_vertices: List of sharp vertex IDs
+            expansion_radius: Radius (mm) around sharp vertex to include faces
+
+        Returns:
+            Modified list of regions with additional faces around sharp vertices
+        """
+        if len(sharp_vertices) == 0:
+            return regions
+
+        # Build vertex-to-faces mapping
+        vertex_faces = {}
+        for face_id, face in enumerate(indices):
+            for vertex_id in face:
+                if vertex_id not in vertex_faces:
+                    vertex_faces[vertex_id] = []
+                vertex_faces[vertex_id].append(face_id)
+
+        # For each sharp vertex, find nearby faces
+        sharp_feature_faces = set()
+        for vertex_id in sharp_vertices:
+            sharp_vertex_pos = vertices[vertex_id]
+
+            # Find all faces within expansion_radius of this sharp vertex
+            for face_id, face in enumerate(indices):
+                # Get face center
+                v0 = vertices[face[0]]
+                v1 = vertices[face[1]]
+                v2 = vertices[face[2]]
+                face_center = (v0 + v1 + v2) / 3.0
+
+                # Check distance to sharp vertex
+                distance = numpy.linalg.norm(face_center - sharp_vertex_pos)
+                if distance < expansion_radius:
+                    sharp_feature_faces.add(face_id)
+
+        Logger.log("i", f"Found {len(sharp_feature_faces)} faces near sharp vertices")
+
+        # Create new regions from sharp feature faces if they're not already in existing regions
+        existing_face_set = set()
+        for region in regions:
+            existing_face_set.update(region)
+
+        # Add unclaimed sharp feature faces as new regions
+        unclaimed_sharp_faces = sharp_feature_faces - existing_face_set
+        if len(unclaimed_sharp_faces) > 0:
+            # Use BFS to find connected components of sharp feature faces
+            visited = set()
+            new_regions = []
+
+            for start_face in unclaimed_sharp_faces:
+                if start_face in visited:
+                    continue
+
+                # Build adjacency for sharp feature faces only
+                adjacency = self._buildAdjacencyGraph(indices)
+
+                # BFS to find connected sharp feature faces
+                region = []
+                queue = [start_face]
+                visited.add(start_face)
+
+                while queue:
+                    current_face = queue.pop(0)
+                    if current_face in unclaimed_sharp_faces:
+                        region.append(current_face)
+
+                        if current_face in adjacency:
+                            for neighbor in adjacency[current_face]:
+                                if neighbor not in visited and neighbor in unclaimed_sharp_faces:
+                                    visited.add(neighbor)
+                                    queue.append(neighbor)
+
+                if len(region) >= 5:  # Minimum faces for a sharp feature region
+                    new_regions.append(region)
+                    Logger.log("i", f"Created new sharp feature region with {len(region)} faces")
+
+            regions.extend(new_regions)
+
+        return regions
 
     def _load_presets(self):
         """Load presets from the presets.json file."""
