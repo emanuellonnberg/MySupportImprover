@@ -72,19 +72,20 @@ Item {
                 id: supportModeComboBox
                 width: 150
                 height: UM.Theme.getSize("setting_control").height
-                model: ["Structural (Dense)", "Stability (Minimal)", "Custom"]
+                model: ["Structural (Dense)", "Stability (Minimal)", "Attached Wing", "Custom"]
                 currentIndex: {
                     if (UM.ActiveTool) {
                         var mode = UM.ActiveTool.properties.getValue("SupportMode")
                         if (mode === "structural") return 0
                         if (mode === "stability") return 1
-                        if (mode === "custom") return 2
+                        if (mode === "wing") return 2
+                        if (mode === "custom") return 3
                     }
                     return 0
                 }
                 onActivated: {
                     if (UM.ActiveTool) {
-                        var modeMap = ["structural", "stability", "custom"]
+                        var modeMap = ["structural", "stability", "wing", "custom"]
                         UM.ActiveTool.setProperty("SupportMode", modeMap[currentIndex])
                     }
                 }
@@ -100,6 +101,7 @@ Item {
                     var mode = UM.ActiveTool.properties.getValue("SupportMode")
                     if (mode === "structural") return "Dense support for load-bearing areas"
                     if (mode === "stability") return "Minimal support for edge stabilization"
+                    if (mode === "wing") return "Attached wing extending to build plate"
                     if (mode === "custom") return "Custom support settings"
                 }
                 return ""
@@ -117,8 +119,155 @@ Item {
             color: UM.Theme.getColor("lining")
         }
 
-        // Size Presets Row
+        // Wing Settings (only visible in wing mode)
+        Column {
+            id: wingSettingsColumn
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") === "wing"
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            width: parent.width
+
+            Label {
+                text: catalog.i18nc("@label", "Wing Settings:")
+                font: UM.Theme.getFont("default_bold")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            // Wing Direction
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Direction:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                }
+
+                ComboBox {
+                    id: wingDirectionComboBox
+                    width: 140
+                    height: UM.Theme.getSize("setting_control").height
+                    model: ["To Build Plate", "Horizontal"]
+                    currentIndex: {
+                        if (UM.ActiveTool) {
+                            var dir = UM.ActiveTool.properties.getValue("WingDirection")
+                            return dir === "horizontal" ? 1 : 0
+                        }
+                        return 0
+                    }
+                    onActivated: {
+                        if (UM.ActiveTool) {
+                            var dirMap = ["to_buildplate", "horizontal"]
+                            UM.ActiveTool.setProperty("WingDirection", dirMap[currentIndex])
+                        }
+                    }
+                }
+            }
+
+            // Wing Thickness
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Thickness:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                Slider {
+                    id: wingThicknessSlider
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.5
+                    to: 5.0
+                    stepSize: 0.1
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("WingThickness") : 1.5
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingThickness", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 60
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: wingThicknessSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 0.5; top: 5.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingThickness", value)
+                            wingThicknessSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Wing Width
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Width:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                Slider {
+                    id: wingWidthSlider
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 2.0
+                    to: 20.0
+                    stepSize: 0.5
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("WingWidth") : 5.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingWidth", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 60
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: wingWidthSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 2.0; top: 20.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("WingWidth", value)
+                            wingWidthSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Separator after wing settings
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: UM.Theme.getColor("lining")
+            }
+        }
+
+        // Size Presets Row (hidden in wing mode)
         Row {
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
 
             Label {
@@ -163,11 +312,11 @@ Item {
             }
         }
 
-        // Save Preset Row - only visible in custom mode
+        // Save Preset Row - only visible in custom mode (and not wing mode)
         Row {
             id: savePresetRow
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom")
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             height: visible ? implicitHeight : 0
             
             TextField {
@@ -197,6 +346,7 @@ Item {
 
         Grid {
             id: mainGrid
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             columns: 2
             flow: Grid.LeftToRight
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
@@ -447,24 +597,27 @@ Item {
             }
         }
 
-        // Separator before support settings
+        // Separator before support settings (hidden in wing mode)
         Rectangle {
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             width: parent.width
             height: 1
             color: UM.Theme.getColor("lining")
         }
 
-        // Support Settings Info Header
+        // Support Settings Info Header (hidden in wing mode)
         Label {
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             text: catalog.i18nc("@label", "Support Settings (applied to volume):")
             font: UM.Theme.getFont("default_bold")
             color: UM.Theme.getColor("text")
             renderType: Text.NativeRendering
         }
 
-        // Support Settings Display Grid
+        // Support Settings Display Grid (hidden in wing mode)
         Grid {
             id: supportSettingsGrid
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
             columns: 2
             columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
             rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)

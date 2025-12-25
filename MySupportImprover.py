@@ -42,6 +42,11 @@ class MySupportImprover(Tool):
     SUPPORT_MODE_STRUCTURAL = "structural"
     SUPPORT_MODE_STABILITY = "stability"
     SUPPORT_MODE_CUSTOM = "custom"
+    SUPPORT_MODE_WING = "wing"  # Attached stability wing
+
+    # Wing direction constants
+    WING_DIRECTION_TO_BUILDPLATE = "to_buildplate"
+    WING_DIRECTION_HORIZONTAL = "horizontal"
 
     # Support mode presets with Cura setting values
     SUPPORT_MODE_SETTINGS = {
@@ -74,6 +79,9 @@ class MySupportImprover(Tool):
             "support_roof_enable": False,
             "support_bottom_enable": False,
             "description": "Custom support settings"
+        },
+        "wing": {
+            "description": "Attached wing extending to build plate or horizontal"
         }
     }
 
@@ -103,13 +111,21 @@ class MySupportImprover(Tool):
         self._support_roof_enable = True
         self._support_bottom_enable = True
 
+        # Wing-specific settings
+        self._wing_direction = self.WING_DIRECTION_TO_BUILDPLATE
+        self._wing_thickness = 1.5  # mm - thickness of the wing
+        self._wing_width = 5.0  # mm - width of the wing (perpendicular to edge)
+        self._wing_angle = 0.0  # degrees - angle from vertical (0 = straight down)
+
         self.setExposedProperties(
             "CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets",
             "SupportAngle", "CurrentPreset", "IsCustom",
-            # New support mode properties
+            # Support mode properties
             "SupportMode", "SupportModes", "SupportPattern", "SupportInfillRate",
             "SupportLineWidth", "SupportWallCount", "SupportInterfaceEnable",
-            "SupportRoofEnable", "SupportBottomEnable", "SupportModeDescription"
+            "SupportRoofEnable", "SupportBottomEnable", "SupportModeDescription",
+            # Wing properties
+            "WingDirection", "WingThickness", "WingWidth", "WingAngle"
         )
         
         # Log initialization
@@ -244,6 +260,7 @@ class MySupportImprover(Tool):
         return [
             {"value": "structural", "label": "Structural (Dense)"},
             {"value": "stability", "label": "Stability (Minimal)"},
+            {"value": "wing", "label": "Attached Wing"},
             {"value": "custom", "label": "Custom"}
         ]
 
@@ -332,6 +349,47 @@ class MySupportImprover(Tool):
 
     SupportBottomEnable = pyqtProperty(bool, fget=getSupportBottomEnable, fset=getSupportBottomEnable)
 
+    # Wing Properties
+    def getWingDirection(self) -> str:
+        return self._wing_direction
+
+    def setWingDirection(self, value: str) -> None:
+        if value != self._wing_direction:
+            self._wing_direction = value
+            self.propertyChanged.emit()
+
+    WingDirection = pyqtProperty(str, fget=getWingDirection, fset=setWingDirection)
+
+    def getWingThickness(self) -> float:
+        return self._wing_thickness
+
+    def setWingThickness(self, value: float) -> None:
+        if value != self._wing_thickness:
+            self._wing_thickness = float(value)
+            self.propertyChanged.emit()
+
+    WingThickness = pyqtProperty(float, fget=getWingThickness, fset=setWingThickness)
+
+    def getWingWidth(self) -> float:
+        return self._wing_width
+
+    def setWingWidth(self, value: float) -> None:
+        if value != self._wing_width:
+            self._wing_width = float(value)
+            self.propertyChanged.emit()
+
+    WingWidth = pyqtProperty(float, fget=getWingWidth, fset=setWingWidth)
+
+    def getWingAngle(self) -> float:
+        return self._wing_angle
+
+    def setWingAngle(self, value: float) -> None:
+        if value != self._wing_angle:
+            self._wing_angle = float(value)
+            self.propertyChanged.emit()
+
+    WingAngle = pyqtProperty(float, fget=getWingAngle, fset=setWingAngle)
+
     def applySupportMode(self, mode: str) -> None:
         """Apply a support mode preset. Called from QML."""
         self.setSupportMode(mode)
@@ -383,8 +441,13 @@ class MySupportImprover(Tool):
 
             picked_position = picking_pass.getPickedPosition(event.x, event.y)
 
-            # Add the anti_overhang_mesh cube at the picked location
-            self._createModifierVolume(picked_node, picked_position)
+            # Create different geometry based on support mode
+            if self._support_mode == self.SUPPORT_MODE_WING:
+                # Create attached wing geometry
+                self._createAttachedWing(picked_node, picked_position)
+            else:
+                # Add the support modifier volume at the picked location
+                self._createModifierVolume(picked_node, picked_position)
 
 
     def setMeshType(self, node: CuraSceneNode, mesh_type: str) -> bool:
@@ -669,6 +732,133 @@ class MySupportImprover(Tool):
 
         mesh.calculateNormals()
         return mesh
+
+    def _createWingMesh(self, width: float, thickness: float, height: float):
+        """Create a thin wing/fin mesh.
+
+        The wing is oriented as a vertical plate:
+        - Width: along X axis (how wide the wing extends from the attachment point)
+        - Thickness: along Y axis (how thin the wing is)
+        - Height: along Z axis (how tall the wing is, from top to bottom)
+
+        The wing is centered at origin, with the top at Z=height/2
+        """
+        mesh = MeshBuilder()
+        w = width / 2
+        t = thickness / 2
+        h = height / 2
+
+        # Cura uses [x, z, y] coordinate format
+        # Create a thin box (wing)
+        verts = [
+            # Top face
+            [-w,  h, -t], [-w,  h,  t], [ w,  h,  t], [ w,  h, -t],
+            # Bottom face
+            [-w, -h, -t], [-w, -h,  t], [ w, -h,  t], [ w, -h, -t],
+            # Back face (Y-)
+            [-w, -h, -t], [-w,  h, -t], [ w,  h, -t], [ w, -h, -t],
+            # Front face (Y+)
+            [-w, -h,  t], [-w,  h,  t], [ w,  h,  t], [ w, -h,  t],
+            # Left face (X-)
+            [-w, -h, -t], [-w, -h,  t], [-w,  h,  t], [-w,  h, -t],
+            # Right face (X+)
+            [ w, -h, -t], [ w, -h,  t], [ w,  h,  t], [ w,  h, -t]
+        ]
+        mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+
+        indices = []
+        for i in range(0, 24, 4):
+            indices.append([i, i+2, i+1])
+            indices.append([i, i+3, i+2])
+        mesh.setIndices(numpy.asarray(indices, dtype=numpy.int32))
+
+        mesh.calculateNormals()
+        return mesh
+
+    def _createAttachedWing(self, parent: CuraSceneNode, position: Vector):
+        """Create an attached stability wing at the clicked position.
+
+        The wing extends from the click position either:
+        - Down to the build plate (to_buildplate mode)
+        - Horizontally outward (horizontal mode)
+        """
+        try:
+            Logger.log("d", f"Creating attached wing at position: {position}")
+
+            # Calculate wing dimensions based on direction mode
+            click_z = position.y  # In Cura, Y is the vertical axis in world coords
+            # But Vector uses y for the vertical, and the picked position z-component is height
+
+            # Get the Z height of the clicked position
+            # Note: Cura's coordinate system has Z as vertical
+            wing_top_z = position.z if hasattr(position, 'z') else position.y
+
+            # For simplicity, let's get the actual height from the position
+            # The picked_position from PickingPass returns world coordinates
+            actual_z = position.y  # In the PickingPass result, y is typically height
+
+            Logger.log("d", f"Click position Y (height): {actual_z}")
+
+            if self._wing_direction == self.WING_DIRECTION_TO_BUILDPLATE:
+                # Wing extends from click position down to build plate (Z=0)
+                wing_height = max(actual_z, 1.0)  # At least 1mm tall
+                # Position the wing so its top is at the click point
+                wing_center_z = actual_z - (wing_height / 2)
+            else:
+                # Horizontal wing - fixed height, extends outward
+                wing_height = self._wing_width  # Use width setting for horizontal extent
+                wing_center_z = actual_z
+
+            # Create the wing mesh
+            wing_mesh = self._createWingMesh(
+                width=self._wing_width,
+                thickness=self._wing_thickness,
+                height=wing_height
+            )
+
+            # Create scene node
+            node = CuraSceneNode()
+            node.setName("Stability Wing")
+            node.setSelectable(True)
+            node.setCalculateBoundingBox(True)
+            node.setMeshData(wing_mesh.build())
+            node.calculateBoundingBoxMesh()
+
+            # Add decorators
+            active_build_plate = CuraApplication.getInstance().getMultiBuildPlateModel().activeBuildPlate
+            node.addDecorator(BuildPlateDecorator(active_build_plate))
+            node.addDecorator(SliceableObjectDecorator())
+
+            # Calculate wing position
+            # The wing should be positioned at the click point
+            if self._wing_direction == self.WING_DIRECTION_TO_BUILDPLATE:
+                # Center the wing vertically between click point and build plate
+                wing_position = Vector(
+                    position.x,
+                    wing_height / 2,  # Center the wing vertically
+                    position.z if hasattr(position, 'z') else 0
+                )
+            else:
+                # Horizontal mode - position at click point
+                wing_position = position
+
+            Logger.log("d", f"Wing position: {wing_position}, height: {wing_height}")
+
+            # Add to scene
+            op = GroupedOperation()
+            op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
+            op.addOperation(SetParentOperation(node, parent))
+            op.addOperation(TranslateOperation(node, wing_position, set_position=True))
+            op.push()
+
+            CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node)
+
+            Logger.log("i", f"Attached wing created successfully (mode: {self._wing_direction})")
+
+        except Exception as e:
+            Logger.log("e", f"Error creating attached wing: {e}")
+            import traceback
+            Logger.log("e", traceback.format_exc())
 
     def _load_presets(self):
         """Load presets from the presets.json file."""
