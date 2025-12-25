@@ -462,11 +462,12 @@ If another part of the model is below:
 - [ ] Implement tip column geometry generation
 - [ ] Add as `support_mesh` type nodes
 
-### Phase 3b: Attached Stability Wings (Alternative) ✅ IMPLEMENTED
+### Phase 3b: Attached Stability Wings (Alternative) ✅ FULLY IMPLEMENTED
 - [x] Implement wing geometry generation
 - [x] Calculate optimal wing direction (toward build plate or horizontal)
-- [ ] Add break-line feature for easy removal (future enhancement)
-- [ ] Collision detection with other model parts (future enhancement)
+- [x] Add break-line feature for easy removal (configurable notch depth 0.2-1.0mm)
+- [x] Collision detection with auto-adjustment of wing position
+- [x] Orientation control (rotation -180° to 180°)
 - [x] Add as model geometry or separate body
 
 ### Phase 4: Refinement
