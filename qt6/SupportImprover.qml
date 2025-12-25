@@ -140,7 +140,7 @@ Item {
 
                 Label {
                     height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@label", "Threshold:")
+                    text: catalog.i18nc("@label", "Detection Angle:")
                     font: UM.Theme.getFont("default")
                     color: UM.Theme.getColor("text")
                     verticalAlignment: Text.AlignVCenter

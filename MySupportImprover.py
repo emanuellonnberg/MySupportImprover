@@ -383,7 +383,7 @@ class MySupportImprover(Tool):
             self._support_mode = self.SUPPORT_MODE_CUSTOM
             self.propertyChanged.emit()
 
-    SupportBottomEnable = pyqtProperty(bool, fget=getSupportBottomEnable, fset=getSupportBottomEnable)
+    SupportBottomEnable = pyqtProperty(bool, fget=getSupportBottomEnable, fset=setSupportBottomEnable)
 
     # Wing Properties
     def getWingDirection(self) -> str:
@@ -1495,13 +1495,13 @@ class MySupportImprover(Tool):
 
             # Check if this face is an overhang
             start_face_id = closest_face_id
-            if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._support_angle, world_transform):
+            if not self._isFaceOverhang(vertices_local, indices, closest_face_id, self._overhang_threshold, world_transform):
                 Logger.log("i", "Clicked face is not an overhang - searching nearby for overhang faces...")
 
                 # Search nearby faces (BFS up to 20 levels deep) for an overhang
                 # This helps find overhangs even when clicking on non-overhang faces of a dangling feature
                 start_face_id = self._findNearbyOverhang(closest_face_id, vertices_local, indices, adjacency,
-                                                         self._support_angle, world_transform, max_depth=20)
+                                                         self._overhang_threshold, world_transform, max_depth=20)
 
                 if start_face_id is None:
                     Logger.log("w", "No overhang faces found near click position - no blocker created")
@@ -1517,7 +1517,7 @@ class MySupportImprover(Tool):
             # This captures the entire dangling feature, not just the strict overhangs
             region_faces = self._findConnectedOverhangRegionExpanded(
                 start_face_id, vertices_local, indices, adjacency,
-                self._support_angle, world_transform, angle_margin=10.0
+                self._overhang_threshold, world_transform, angle_margin=10.0
             )
 
             Logger.log("i", f"Found connected overhang region with {len(region_faces)} faces")
@@ -1590,7 +1590,7 @@ class MySupportImprover(Tool):
             Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
 
             # Detect overhang faces (pass transformation to handle rotation)
-            overhang_face_ids = self._detectOverhangFaces(vertices_local, indices, self._support_angle, world_transform)
+            overhang_face_ids = self._detectOverhangFaces(vertices_local, indices, self._overhang_threshold, world_transform)
             Logger.log("i", f"Found {len(overhang_face_ids)} overhang faces")
 
             if len(overhang_face_ids) == 0:
