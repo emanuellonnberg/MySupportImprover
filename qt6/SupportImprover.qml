@@ -119,6 +119,134 @@ Item {
             color: UM.Theme.getColor("lining")
         }
 
+        // =====================================================
+        // Automatic Overhang Detection Section
+        // =====================================================
+        Column {
+            id: overhangDetectionSection
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            width: parent.width
+
+            Label {
+                text: catalog.i18nc("@label", "Automatic Detection:")
+                font: UM.Theme.getFont("default_bold")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            // Overhang Threshold
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Threshold:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                Slider {
+                    id: overhangThresholdSlider
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 20.0
+                    to: 70.0
+                    stepSize: 5.0
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("OverhangThreshold") : 45.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("OverhangThreshold", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 55
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "°"
+                    text: overhangThresholdSlider.value.toFixed(0)
+                    validator: DoubleValidator { bottom: 20; top: 70; decimals: 0 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("OverhangThreshold", value)
+                            overhangThresholdSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Detection Buttons Row
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Button {
+                    id: detectOverhangsButton
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@button", "Detect Overhangs")
+                    onClicked: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.triggerAction("detectOverhangsOnSelection")
+                        }
+                    }
+                }
+
+                Button {
+                    id: createSupportButton
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@button", "Create Support")
+                    enabled: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                    onClicked: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.triggerAction("createSupportForOverhangs")
+                        }
+                    }
+                }
+            }
+
+            // Detection Status
+            Label {
+                id: detectionStatusLabel
+                width: parent.width
+                height: UM.Theme.getSize("setting_control").height
+                text: {
+                    if (UM.ActiveTool) {
+                        var count = UM.ActiveTool.properties.getValue("DetectedOverhangCount")
+                        if (count === 0) {
+                            return "No overhangs detected. Select a model and click Detect."
+                        } else if (count === 1) {
+                            return "Detected 1 overhang region"
+                        } else {
+                            return "Detected " + count + " overhang regions"
+                        }
+                    }
+                    return ""
+                }
+                font: UM.Theme.getFont("default")
+                color: {
+                    if (UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0) {
+                        return UM.Theme.getColor("text_success") || UM.Theme.getColor("text")
+                    }
+                    return UM.Theme.getColor("text_inactive")
+                }
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                wrapMode: Text.WordWrap
+            }
+
+            // Separator after detection section
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: UM.Theme.getColor("lining")
+            }
+        }
+
         // Wing Settings (only visible in wing mode)
         Column {
             id: wingSettingsColumn

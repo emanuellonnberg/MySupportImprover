@@ -32,6 +32,8 @@ from cura.Scene.BuildPlateDecorator import BuildPlateDecorator
 from UM.Settings.SettingInstance import SettingInstance
 
 import numpy
+from collections import deque
+from typing import List, Dict, Set, Tuple, Optional
 
 # Suggested solution from fieldOfView . in this discussion solved in Cura 4.9
 # https://github.com/5axes/Calibration-Shapes/issues/1
@@ -114,6 +116,12 @@ class MySupportImprover(Tool):
         self._support_roof_enable = True
         self._support_bottom_enable = True
 
+        # Overhang detection settings
+        self._overhang_threshold = 45.0  # degrees - typical for PLA
+        self._detected_overhangs = []  # List of detected overhang regions
+        self._overhang_adjacency = {}  # Face adjacency graph
+        self._overhang_angles = None  # Cached overhang angles per face
+
         # Wing-specific settings
         self._wing_direction = self.WING_DIRECTION_TO_BUILDPLATE
         self._wing_thickness = 1.5  # mm - thickness of the wing
@@ -134,7 +142,9 @@ class MySupportImprover(Tool):
             # Wing properties
             "WingDirection", "WingThickness", "WingWidth", "WingAngle",
             "WingBreaklineEnable", "WingBreaklineDepth", "WingBreaklinePosition",
-            "WingRotation"
+            "WingRotation",
+            # Overhang detection properties
+            "OverhangThreshold", "DetectedOverhangCount"
         )
         
         # Log initialization
@@ -1184,11 +1194,11 @@ class MySupportImprover(Tool):
         if preset_name == "Custom":
             self.setIsCustom(True)
             return
-            
+
         if preset_name in self._presets:
             preset = self._presets[preset_name]
             self._cube_x = float(preset["x"])
-            self._cube_y = float(preset["y"])          
+            self._cube_y = float(preset["y"])
             self._cube_z = float(preset["z"])
             self._is_custom = False
             self.setCurrentPreset(preset_name)
@@ -1196,3 +1206,394 @@ class MySupportImprover(Tool):
             Logger.log("i", f"Applied preset: {preset_name}")
         else:
             Logger.log("w", f"Preset not found: {preset_name}")
+
+    # =====================================================================
+    # Overhang Detection Properties and Methods
+    # =====================================================================
+
+    def getOverhangThreshold(self) -> float:
+        return self._overhang_threshold
+
+    def setOverhangThreshold(self, value: float) -> None:
+        if value != self._overhang_threshold:
+            self._overhang_threshold = float(value)
+            # Clear cached detection results when threshold changes
+            self._detected_overhangs = []
+            self._overhang_angles = None
+            self.propertyChanged.emit()
+            Logger.log("d", f"Overhang threshold changed to {self._overhang_threshold}")
+
+    OverhangThreshold = pyqtProperty(float, fget=getOverhangThreshold, fset=setOverhangThreshold)
+
+    def getDetectedOverhangCount(self) -> int:
+        return len(self._detected_overhangs)
+
+    DetectedOverhangCount = pyqtProperty(int, fget=getDetectedOverhangCount)
+
+    def _compute_face_normals(self, vertices: numpy.ndarray, indices: numpy.ndarray) -> numpy.ndarray:
+        """Calculate face normals from vertices and indices.
+
+        Args:
+            vertices: Nx3 array of vertex positions
+            indices: Mx3 array of face indices
+
+        Returns:
+            Mx3 array of unit face normals
+        """
+        # Get triangle vertices
+        v0 = vertices[indices[:, 0]]
+        v1 = vertices[indices[:, 1]]
+        v2 = vertices[indices[:, 2]]
+
+        # Compute normals via cross product
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normals = numpy.cross(edge1, edge2)
+
+        # Normalize
+        lengths = numpy.linalg.norm(normals, axis=1, keepdims=True)
+        normals = normals / numpy.maximum(lengths, 1e-10)
+
+        return normals
+
+    def _build_face_adjacency_graph(self, indices: numpy.ndarray) -> Dict[int, List[int]]:
+        """Build adjacency list for mesh faces.
+
+        Two faces are adjacent if they share an edge.
+
+        Args:
+            indices: Mx3 array of face indices
+
+        Returns:
+            Dictionary mapping face_id to list of adjacent face_ids
+        """
+        face_count = len(indices)
+
+        # Create edge-to-face mapping
+        edge_to_faces: Dict[Tuple[int, int], List[int]] = {}
+        for face_id, face in enumerate(indices):
+            for i in range(3):
+                # Create edge key (sorted for consistency)
+                edge = tuple(sorted([int(face[i]), int(face[(i + 1) % 3])]))
+                if edge not in edge_to_faces:
+                    edge_to_faces[edge] = []
+                edge_to_faces[edge].append(face_id)
+
+        # Build adjacency list
+        adjacency: Dict[int, List[int]] = {i: [] for i in range(face_count)}
+        for edge, faces in edge_to_faces.items():
+            if len(faces) == 2:  # Interior edge (shared by exactly 2 faces)
+                adjacency[faces[0]].append(faces[1])
+                adjacency[faces[1]].append(faces[0])
+
+        return adjacency
+
+    def _detect_overhangs(self, node: CuraSceneNode, threshold_angle: Optional[float] = None) -> Tuple[numpy.ndarray, numpy.ndarray]:
+        """Detect overhang faces using normal vector analysis.
+
+        Args:
+            node: The CuraSceneNode to analyze
+            threshold_angle: Overhang threshold in degrees (default: use self._overhang_threshold)
+
+        Returns:
+            Tuple of (overhang_face_ids, angles) where:
+            - overhang_face_ids: array of face indices that are overhangs
+            - angles: array of angles for all faces
+        """
+        if threshold_angle is None:
+            threshold_angle = self._overhang_threshold
+
+        mesh_data = node.getMeshData()
+        if not mesh_data:
+            Logger.log("w", "Node has no mesh data")
+            return numpy.array([]), numpy.array([])
+
+        # Get transformed mesh data
+        transformed_mesh = mesh_data.getTransformed(node.getWorldTransformation())
+
+        vertices = transformed_mesh.getVertices()
+        if vertices is None or len(vertices) == 0:
+            Logger.log("w", "Mesh has no vertices")
+            return numpy.array([]), numpy.array([])
+
+        if transformed_mesh.hasIndices():
+            indices = transformed_mesh.getIndices()
+        else:
+            # Create indices if not present (each 3 vertices = 1 face)
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        # Compute face normals
+        face_normals = self._compute_face_normals(vertices, indices)
+
+        # Build direction (downward in Cura's coordinate system: -Y)
+        # In Cura, Y is the vertical axis
+        build_direction = numpy.array([[0., -1., 0.]])
+
+        # Compute angles for all faces
+        # The dot product gives cos(angle) where angle is between normal and build direction
+        dot_products = numpy.dot(face_normals, build_direction.T).flatten()
+
+        # Clamp dot products to valid range for arccos
+        dot_products = numpy.clip(dot_products, -1.0, 1.0)
+
+        # Convert to angles in degrees
+        # We want the angle from the downward direction
+        angles = numpy.degrees(numpy.arccos(dot_products))
+
+        # Faces pointing downward (normal pointing down) have small angles
+        # Overhangs are faces that face downward beyond the threshold
+        # A face with normal pointing straight down has angle = 0
+        # A horizontal face has angle = 90
+        # A face pointing up has angle = 180
+
+        # For overhang detection, we want faces with normals pointing down
+        # (i.e., the undersides of geometry)
+        # These are faces where the angle to the down vector is small
+        overhang_mask = angles < (90 - threshold_angle)
+
+        overhang_face_ids = numpy.where(overhang_mask)[0]
+
+        Logger.log("d", f"Detected {len(overhang_face_ids)} overhang faces "
+                      f"out of {len(angles)} total faces (threshold: {threshold_angle}°)")
+
+        return overhang_face_ids, angles
+
+    def _find_connected_overhang_region(self, seed_face_id: int, overhang_mask: numpy.ndarray,
+                                         adjacency: Dict[int, List[int]]) -> List[int]:
+        """BFS to find connected overhang region from seed face.
+
+        Args:
+            seed_face_id: The starting face index
+            overhang_mask: Boolean array indicating which faces are overhangs
+            adjacency: Face adjacency graph
+
+        Returns:
+            List of face indices in the connected overhang region
+        """
+        if seed_face_id >= len(overhang_mask) or not overhang_mask[seed_face_id]:
+            return []
+
+        visited: Set[int] = set()
+        queue = deque([seed_face_id])
+        region: List[int] = []
+
+        while queue:
+            face_id = queue.popleft()
+
+            if face_id in visited:
+                continue
+
+            # Check if this face is an overhang
+            if not overhang_mask[face_id]:
+                continue
+
+            visited.add(face_id)
+            region.append(face_id)
+
+            # Add adjacent faces to queue
+            for neighbor_id in adjacency.get(face_id, []):
+                if neighbor_id not in visited:
+                    queue.append(neighbor_id)
+
+        return region
+
+    def _get_region_vertices(self, region_face_ids: List[int], vertices: numpy.ndarray,
+                              indices: numpy.ndarray) -> numpy.ndarray:
+        """Extract vertices belonging to faces in a region.
+
+        Args:
+            region_face_ids: List of face indices in the region
+            vertices: Nx3 array of all vertex positions
+            indices: Mx3 array of all face indices
+
+        Returns:
+            Array of unique vertex positions in the region
+        """
+        if not region_face_ids:
+            return numpy.array([])
+
+        # Get all vertex indices for faces in the region
+        region_indices = indices[region_face_ids].flatten()
+        unique_vertex_ids = numpy.unique(region_indices)
+
+        return vertices[unique_vertex_ids]
+
+    def _classify_overhang_type(self, region_vertices: numpy.ndarray,
+                                 all_overhang_vertices: numpy.ndarray) -> str:
+        """Classify an overhang region as 'tip' or 'boundary'.
+
+        The tip is the lowest point of the overhang (needs structural support).
+        Boundary regions are the sides (need stability support only).
+
+        Args:
+            region_vertices: Vertices of this region
+            all_overhang_vertices: Vertices of all overhang regions combined
+
+        Returns:
+            'tip' or 'boundary'
+        """
+        if len(region_vertices) == 0:
+            return "boundary"
+
+        # Find the lowest point in this region (minimum Y in Cura)
+        region_min_y = numpy.min(region_vertices[:, 1])
+
+        # Find the lowest point across all overhangs
+        global_min_y = numpy.min(all_overhang_vertices[:, 1])
+
+        # If this region contains the lowest point (within tolerance), it's a tip
+        tolerance = 0.5  # mm
+        if abs(region_min_y - global_min_y) < tolerance:
+            return "tip"
+        else:
+            return "boundary"
+
+    def detectOverhangsOnSelection(self):
+        """Detect overhangs on the currently selected model.
+
+        This method analyzes the selected model and populates self._detected_overhangs
+        with information about each overhang region.
+        """
+        selected_node = Selection.getSelectedObject(0)
+        if not selected_node:
+            Logger.log("w", "No object selected for overhang detection")
+            return
+
+        Logger.log("i", f"Detecting overhangs on: {selected_node.getName()}")
+
+        # Get mesh data
+        mesh_data = selected_node.getMeshData()
+        if not mesh_data:
+            Logger.log("w", "Selected node has no mesh data")
+            return
+
+        transformed_mesh = mesh_data.getTransformed(selected_node.getWorldTransformation())
+        vertices = transformed_mesh.getVertices()
+
+        if transformed_mesh.hasIndices():
+            indices = transformed_mesh.getIndices()
+        else:
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        # Detect all overhang faces
+        overhang_face_ids, angles = self._detect_overhangs(selected_node)
+        self._overhang_angles = angles
+
+        if len(overhang_face_ids) == 0:
+            Logger.log("i", "No overhangs detected")
+            self._detected_overhangs = []
+            self.propertyChanged.emit()
+            return
+
+        # Build face adjacency graph
+        self._overhang_adjacency = self._build_face_adjacency_graph(indices)
+
+        # Create overhang mask
+        overhang_mask = numpy.zeros(len(angles), dtype=bool)
+        overhang_mask[overhang_face_ids] = True
+
+        # Find connected regions using BFS
+        visited_faces: Set[int] = set()
+        regions: List[Dict] = []
+
+        for face_id in overhang_face_ids:
+            if face_id in visited_faces:
+                continue
+
+            region_faces = self._find_connected_overhang_region(
+                face_id, overhang_mask, self._overhang_adjacency
+            )
+
+            if region_faces:
+                visited_faces.update(region_faces)
+                region_vertices = self._get_region_vertices(region_faces, vertices, indices)
+
+                # Calculate region statistics
+                region_info = {
+                    "face_ids": region_faces,
+                    "face_count": len(region_faces),
+                    "vertices": region_vertices,
+                    "min_y": float(numpy.min(region_vertices[:, 1])) if len(region_vertices) > 0 else 0,
+                    "max_angle": float(numpy.max(angles[region_faces])),
+                    "avg_angle": float(numpy.mean(angles[region_faces])),
+                    "center": numpy.mean(region_vertices, axis=0) if len(region_vertices) > 0 else numpy.zeros(3),
+                }
+                regions.append(region_info)
+
+        # Get all overhang vertices for tip classification
+        all_overhang_face_ids = []
+        for r in regions:
+            all_overhang_face_ids.extend(r["face_ids"])
+        all_overhang_vertices = self._get_region_vertices(all_overhang_face_ids, vertices, indices)
+
+        # Classify each region as tip or boundary
+        for region in regions:
+            region["type"] = self._classify_overhang_type(region["vertices"], all_overhang_vertices)
+
+        # Sort regions by min_y (lowest first - tips at the bottom)
+        regions.sort(key=lambda r: r["min_y"])
+
+        self._detected_overhangs = regions
+        self.propertyChanged.emit()
+
+        # Log summary
+        tip_count = sum(1 for r in regions if r["type"] == "tip")
+        boundary_count = sum(1 for r in regions if r["type"] == "boundary")
+        Logger.log("i", f"Detected {len(regions)} overhang regions: "
+                      f"{tip_count} tips, {boundary_count} boundaries")
+
+        for i, region in enumerate(regions):
+            Logger.log("d", f"  Region {i}: {region['face_count']} faces, "
+                          f"type={region['type']}, min_y={region['min_y']:.2f}mm, "
+                          f"avg_angle={region['avg_angle']:.1f}°")
+
+    def createSupportForOverhangs(self):
+        """Create support volumes for detected overhang regions.
+
+        Uses structural support for tips and stability support for boundaries.
+        """
+        selected_node = Selection.getSelectedObject(0)
+        if not selected_node:
+            Logger.log("w", "No object selected")
+            return
+
+        if not self._detected_overhangs:
+            Logger.log("w", "No overhangs detected. Run detection first.")
+            return
+
+        Logger.log("i", f"Creating support for {len(self._detected_overhangs)} overhang regions")
+
+        for i, region in enumerate(self._detected_overhangs):
+            # Determine support mode based on region type
+            if region["type"] == "tip":
+                self._support_mode = self.SUPPORT_MODE_STRUCTURAL
+                Logger.log("d", f"Region {i}: Creating structural support (tip)")
+            else:
+                self._support_mode = self.SUPPORT_MODE_STABILITY
+                Logger.log("d", f"Region {i}: Creating stability support (boundary)")
+
+            # Apply the mode settings
+            self.setSupportMode(self._support_mode)
+
+            # Calculate bounding box of the region for volume placement
+            region_vertices = region["vertices"]
+            if len(region_vertices) == 0:
+                continue
+
+            min_coords = numpy.min(region_vertices, axis=0)
+            max_coords = numpy.max(region_vertices, axis=0)
+            center = (min_coords + max_coords) / 2
+
+            # Calculate appropriate cube size to cover the region
+            size = max_coords - min_coords
+            padding = 2.0  # mm padding around the region
+
+            self._cube_x = max(size[0] + padding, 3.0)
+            self._cube_y = max(size[2] + padding, 3.0)  # Swap Y/Z for Cura coords
+            self._cube_z = max(size[1] + padding, 3.0)
+
+            # Create the modifier volume at the region center
+            position = Vector(float(center[0]), float(center[1]), float(center[2]))
+            self._createModifierVolume(selected_node, position)
+
+        Logger.log("i", "Support creation complete")
