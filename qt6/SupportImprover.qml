@@ -239,13 +239,146 @@ Item {
                 wrapMode: Text.WordWrap
             }
 
-            // Custom Support Mesh Section (Phase 3)
+            // Custom Support Mesh Section (Phase 3 + 4)
             Label {
                 visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
                 text: catalog.i18nc("@label", "Custom Support Mesh:")
                 font: UM.Theme.getFont("default_bold")
                 color: UM.Theme.getColor("text")
                 renderType: Text.NativeRendering
+            }
+
+            // Column Radius
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Column Radius:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 85
+                }
+
+                Slider {
+                    id: columnRadiusSlider
+                    width: 80
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.5
+                    to: 5.0
+                    stepSize: 0.5
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ColumnRadius") : 2.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ColumnRadius", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 50
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: columnRadiusSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 0.5; top: 5.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ColumnRadius", value)
+                            columnRadiusSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Column Taper
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Column Taper:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 85
+                }
+
+                Slider {
+                    id: columnTaperSlider
+                    width: 80
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.2
+                    to: 1.0
+                    stepSize: 0.1
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ColumnTaper") : 0.6
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ColumnTaper", value)
+                        }
+                    }
+                }
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: Math.round(columnTaperSlider.value * 100) + "%"
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 40
+                }
+            }
+
+            // Rail Width
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Rail Width:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 85
+                }
+
+                Slider {
+                    id: railWidthSlider
+                    width: 80
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.3
+                    to: 3.0
+                    stepSize: 0.1
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("RailWidth") : 0.8
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("RailWidth", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 50
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: railWidthSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 0.3; top: 3.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("RailWidth", value)
+                            railWidthSlider.value = value
+                        }
+                    }
+                }
             }
 
             Row {
@@ -268,7 +401,7 @@ Item {
                     onClicked: {
                         if (UM.ActiveTool) {
                             var typeMap = ["auto", "tip_column", "edge_rail"]
-                            UM.ActiveTool.triggerActionWithData("createCustomSupportMesh", typeMap[customSupportTypeComboBox.currentIndex])
+                            UM.ActiveTool.triggerActionWithData("createCustomSupportMeshV2", typeMap[customSupportTypeComboBox.currentIndex])
                         }
                     }
                 }
@@ -277,7 +410,7 @@ Item {
             Label {
                 visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
                 width: parent.width
-                text: "Creates tapered columns for tips and thin rails for edges"
+                text: "Columns for tips, rails for edges. Supports model-to-model."
                 font: UM.Theme.getFont("default")
                 color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering

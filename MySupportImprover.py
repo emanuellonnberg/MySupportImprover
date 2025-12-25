@@ -122,6 +122,14 @@ class MySupportImprover(Tool):
         self._overhang_adjacency = {}  # Face adjacency graph
         self._overhang_angles = None  # Cached overhang angles per face
 
+        # Custom support mesh settings (Phase 4)
+        self._column_radius = 2.0  # mm - radius of tip support columns
+        self._column_taper = 0.6  # taper factor (0.6 = 60% of base radius at top)
+        self._column_sides = 8  # number of sides for column polygon
+        self._rail_width = 0.8  # mm - width of edge rails
+        self._rail_min_length = 2.0  # mm - minimum edge length to create rail
+        self._merge_edge_distance = 1.0  # mm - merge edges closer than this
+
         # Wing-specific settings
         self._wing_direction = self.WING_DIRECTION_TO_BUILDPLATE
         self._wing_thickness = 1.5  # mm - thickness of the wing
@@ -144,7 +152,9 @@ class MySupportImprover(Tool):
             "WingBreaklineEnable", "WingBreaklineDepth", "WingBreaklinePosition",
             "WingRotation",
             # Overhang detection properties
-            "OverhangThreshold", "DetectedOverhangCount"
+            "OverhangThreshold", "DetectedOverhangCount",
+            # Custom support mesh properties (Phase 4)
+            "ColumnRadius", "ColumnTaper", "RailWidth"
         )
         
         # Log initialization
@@ -1978,4 +1988,456 @@ class MySupportImprover(Tool):
                         rails_created += 1
 
         Logger.log("i", f"Custom support creation complete: "
+                      f"{columns_created} columns, {rails_created} rails")
+
+    # =====================================================================
+    # Phase 4: Refinement - Properties and Methods
+    # =====================================================================
+
+    def getColumnRadius(self) -> float:
+        return self._column_radius
+
+    def setColumnRadius(self, value: float) -> None:
+        if value != self._column_radius:
+            self._column_radius = max(0.5, min(10.0, float(value)))
+            self.propertyChanged.emit()
+
+    ColumnRadius = pyqtProperty(float, fget=getColumnRadius, fset=setColumnRadius)
+
+    def getColumnTaper(self) -> float:
+        return self._column_taper
+
+    def setColumnTaper(self, value: float) -> None:
+        if value != self._column_taper:
+            self._column_taper = max(0.2, min(1.0, float(value)))
+            self.propertyChanged.emit()
+
+    ColumnTaper = pyqtProperty(float, fget=getColumnTaper, fset=setColumnTaper)
+
+    def getRailWidth(self) -> float:
+        return self._rail_width
+
+    def setRailWidth(self, value: float) -> None:
+        if value != self._rail_width:
+            self._rail_width = max(0.3, min(5.0, float(value)))
+            self.propertyChanged.emit()
+
+    RailWidth = pyqtProperty(float, fget=getRailWidth, fset=setRailWidth)
+
+    def _find_obstruction_height(self, x: float, z: float, max_y: float,
+                                   node: CuraSceneNode) -> float:
+        """Find the highest point on the model below a given position.
+
+        This is used for model-to-model support when there's geometry
+        between the overhang and the build plate.
+
+        Args:
+            x: X coordinate to check
+            z: Z coordinate to check
+            max_y: Maximum Y (don't look above this)
+            node: The model node to check against
+
+        Returns:
+            Y coordinate of the highest obstruction, or 0.0 if clear to build plate
+        """
+        mesh_data = node.getMeshData()
+        if not mesh_data:
+            return 0.0
+
+        transformed_mesh = mesh_data.getTransformed(node.getWorldTransformation())
+        vertices = transformed_mesh.getVertices()
+
+        if transformed_mesh.hasIndices():
+            indices = transformed_mesh.getIndices()
+        else:
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        # Check each triangle for intersection with vertical ray at (x, z)
+        highest_y = 0.0
+        tolerance = 0.5  # mm - how close the ray needs to pass to count
+
+        for face in indices:
+            v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+
+            # Quick bounding box check
+            min_x = min(v0[0], v1[0], v2[0]) - tolerance
+            max_x = max(v0[0], v1[0], v2[0]) + tolerance
+            min_z = min(v0[2], v1[2], v2[2]) - tolerance
+            max_z = max(v0[2], v1[2], v2[2]) + tolerance
+
+            if x < min_x or x > max_x or z < min_z or z > max_z:
+                continue
+
+            # Check if point (x, z) is inside triangle projection
+            # Using barycentric coordinates
+            denom = (v1[2] - v2[2]) * (v0[0] - v2[0]) + (v2[0] - v1[0]) * (v0[2] - v2[2])
+            if abs(denom) < 1e-10:
+                continue
+
+            a = ((v1[2] - v2[2]) * (x - v2[0]) + (v2[0] - v1[0]) * (z - v2[2])) / denom
+            b = ((v2[2] - v0[2]) * (x - v2[0]) + (v0[0] - v2[0]) * (z - v2[2])) / denom
+            c = 1.0 - a - b
+
+            # Allow some tolerance for edge cases
+            if a >= -0.1 and b >= -0.1 and c >= -0.1:
+                # Interpolate Y at this point
+                y = a * v0[1] + b * v1[1] + c * v2[1]
+
+                # Only count if below max_y (with gap)
+                if y < max_y - 0.5 and y > highest_y:
+                    highest_y = y
+
+        return highest_y
+
+    def _merge_nearby_edges(self, edges: List[Tuple[numpy.ndarray, numpy.ndarray]],
+                             merge_distance: float = 1.0) -> List[Tuple[numpy.ndarray, numpy.ndarray]]:
+        """Merge nearby boundary edges into longer continuous edges.
+
+        This reduces the number of individual rail meshes and creates
+        cleaner support structures.
+
+        Args:
+            edges: List of (start, end) vertex pairs
+            merge_distance: Maximum distance between edge endpoints to merge
+
+        Returns:
+            List of merged edges
+        """
+        if len(edges) <= 1:
+            return edges
+
+        # Build a graph of connected edges
+        merged = []
+        used = set()
+
+        for i, (start1, end1) in enumerate(edges):
+            if i in used:
+                continue
+
+            # Start a chain with this edge
+            chain_start = start1.copy()
+            chain_end = end1.copy()
+            used.add(i)
+
+            # Try to extend the chain
+            changed = True
+            while changed:
+                changed = False
+                for j, (start2, end2) in enumerate(edges):
+                    if j in used:
+                        continue
+
+                    # Check if this edge connects to our chain
+                    dist_start_start = numpy.linalg.norm(chain_start - start2)
+                    dist_start_end = numpy.linalg.norm(chain_start - end2)
+                    dist_end_start = numpy.linalg.norm(chain_end - start2)
+                    dist_end_end = numpy.linalg.norm(chain_end - end2)
+
+                    min_dist = min(dist_start_start, dist_start_end, dist_end_start, dist_end_end)
+
+                    if min_dist < merge_distance:
+                        used.add(j)
+                        changed = True
+
+                        # Extend the chain appropriately
+                        if dist_end_start < merge_distance:
+                            chain_end = end2.copy()
+                        elif dist_end_end < merge_distance:
+                            chain_end = start2.copy()
+                        elif dist_start_start < merge_distance:
+                            chain_start = end2.copy()
+                        elif dist_start_end < merge_distance:
+                            chain_start = start2.copy()
+
+            # Calculate merged edge length
+            edge_length = numpy.linalg.norm(chain_end - chain_start)
+            if edge_length >= self._rail_min_length:
+                merged.append((chain_start, chain_end))
+
+        Logger.log("d", f"Merged {len(edges)} edges into {len(merged)} chains")
+        return merged
+
+    def _create_tip_column_mesh_v2(self, tip_position: numpy.ndarray,
+                                    base_y: float = 0.0,
+                                    column_radius: float = None,
+                                    taper: float = None,
+                                    sides: int = None) -> MeshBuilder:
+        """Create a support column from tip to specified base height.
+
+        Enhanced version that supports model-to-model support.
+
+        Args:
+            tip_position: Position of the tip (numpy array [x, y, z])
+            base_y: Y coordinate for the column base (0 = build plate)
+            column_radius: Radius at base (uses self._column_radius if None)
+            taper: Taper factor (uses self._column_taper if None)
+            sides: Number of sides (uses self._column_sides if None)
+
+        Returns:
+            MeshBuilder with the column geometry
+        """
+        mesh = MeshBuilder()
+
+        # Use instance defaults if not specified
+        if column_radius is None:
+            column_radius = self._column_radius
+        if taper is None:
+            taper = self._column_taper
+        if sides is None:
+            sides = self._column_sides
+
+        tip_y = tip_position[1]
+        if tip_y <= base_y:
+            Logger.log("w", f"Tip ({tip_y}) is at or below base ({base_y}), cannot create column")
+            return mesh
+
+        # Column parameters
+        height = tip_y - base_y
+        top_radius = column_radius * taper
+        base_radius = column_radius
+
+        # Generate vertices
+        verts = []
+        indices = []
+
+        # Bottom center
+        verts.append([tip_position[0], base_y, tip_position[2]])
+        bottom_center_idx = 0
+
+        # Top center
+        verts.append([tip_position[0], tip_y, tip_position[2]])
+        top_center_idx = 1
+
+        # Bottom ring vertices
+        bottom_start_idx = 2
+        for i in range(sides):
+            angle = 2 * math.pi * i / sides
+            x = tip_position[0] + base_radius * math.cos(angle)
+            z = tip_position[2] + base_radius * math.sin(angle)
+            verts.append([x, base_y, z])
+
+        # Top ring vertices
+        top_start_idx = bottom_start_idx + sides
+        for i in range(sides):
+            angle = 2 * math.pi * i / sides
+            x = tip_position[0] + top_radius * math.cos(angle)
+            z = tip_position[2] + top_radius * math.sin(angle)
+            verts.append([x, tip_y, z])
+
+        # Bottom cap faces
+        for i in range(sides):
+            next_i = (i + 1) % sides
+            indices.append([bottom_center_idx, bottom_start_idx + next_i, bottom_start_idx + i])
+
+        # Top cap faces
+        for i in range(sides):
+            next_i = (i + 1) % sides
+            indices.append([top_center_idx, top_start_idx + i, top_start_idx + next_i])
+
+        # Side faces
+        for i in range(sides):
+            next_i = (i + 1) % sides
+            b1 = bottom_start_idx + i
+            b2 = bottom_start_idx + next_i
+            t1 = top_start_idx + i
+            t2 = top_start_idx + next_i
+            indices.append([b1, t1, b2])
+            indices.append([b2, t1, t2])
+
+        mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+        mesh.setIndices(numpy.asarray(indices, dtype=numpy.int32))
+        mesh.calculateNormals()
+
+        return mesh
+
+    def _create_edge_rail_mesh_v2(self, edge_start: numpy.ndarray, edge_end: numpy.ndarray,
+                                   base_y: float = 0.0,
+                                   rail_width: float = None) -> MeshBuilder:
+        """Create an edge rail mesh with configurable base height.
+
+        Enhanced version supporting model-to-model support.
+
+        Args:
+            edge_start: Start vertex of the edge
+            edge_end: End vertex of the edge
+            base_y: Y coordinate for rail base (0 = build plate)
+            rail_width: Width of the rail (uses self._rail_width if None)
+
+        Returns:
+            MeshBuilder with the rail geometry
+        """
+        mesh = MeshBuilder()
+
+        if rail_width is None:
+            rail_width = self._rail_width
+
+        edge_vec = edge_end - edge_start
+        edge_length = numpy.linalg.norm(edge_vec)
+
+        if edge_length < 0.1:
+            return mesh
+
+        edge_dir = edge_vec / edge_length
+
+        # Calculate perpendicular direction
+        up = numpy.array([0.0, 1.0, 0.0])
+        perp_dir = numpy.cross(edge_dir, up)
+        perp_length = numpy.linalg.norm(perp_dir)
+
+        if perp_length < 0.01:
+            perp_dir = numpy.array([1.0, 0.0, 0.0])
+        else:
+            perp_dir = perp_dir / perp_length
+
+        # Determine rail height
+        edge_min_y = min(edge_start[1], edge_end[1])
+        edge_max_y = max(edge_start[1], edge_end[1])
+
+        if edge_min_y <= base_y:
+            Logger.log("w", "Edge is at or below base, cannot create rail")
+            return mesh
+
+        # Rail dimensions
+        half_width = rail_width / 2
+        half_length = edge_length / 2
+
+        edge_center = (edge_start + edge_end) / 2
+        rail_height = edge_min_y - base_y
+        rail_center_y = base_y + rail_height / 2
+
+        # Build vertices
+        verts = []
+        for dy in [-rail_height / 2, rail_height / 2]:
+            for dw in [-half_width, half_width]:
+                for dl in [-half_length, half_length]:
+                    vert = numpy.array([edge_center[0], rail_center_y, edge_center[2]])
+                    vert[1] += dy
+                    vert += perp_dir * dw
+                    vert += edge_dir * dl
+                    verts.append([vert[0], vert[1], vert[2]])
+
+        face_indices = [
+            [0, 1, 3], [0, 3, 2],  # Bottom
+            [4, 7, 5], [4, 6, 7],  # Top
+            [0, 4, 5], [0, 5, 1],  # Front
+            [2, 3, 7], [2, 7, 6],  # Back
+            [0, 2, 6], [0, 6, 4],  # Left
+            [1, 5, 7], [1, 7, 3],  # Right
+        ]
+
+        mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
+        mesh.setIndices(numpy.asarray(face_indices, dtype=numpy.int32))
+        mesh.calculateNormals()
+
+        return mesh
+
+    def createCustomSupportMeshV2(self, support_type: str = "auto"):
+        """Create custom support mesh with Phase 4 refinements.
+
+        Includes obstruction detection, edge merging, and configurable dimensions.
+        """
+        selected_node = Selection.getSelectedObject(0)
+        if not selected_node:
+            Logger.log("w", "No object selected")
+            return
+
+        if not self._detected_overhangs:
+            Logger.log("w", "No overhangs detected. Run detection first.")
+            return
+
+        mesh_data = selected_node.getMeshData()
+        if not mesh_data:
+            return
+
+        transformed_mesh = mesh_data.getTransformed(selected_node.getWorldTransformation())
+        vertices = transformed_mesh.getVertices()
+
+        if transformed_mesh.hasIndices():
+            indices = transformed_mesh.getIndices()
+        else:
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        # Create overhang mask
+        overhang_mask = numpy.zeros(len(self._overhang_angles), dtype=bool)
+        for region in self._detected_overhangs:
+            for face_id in region["face_ids"]:
+                if face_id < len(overhang_mask):
+                    overhang_mask[face_id] = True
+
+        Logger.log("i", f"Creating refined support meshes (type: {support_type})")
+
+        rails_created = 0
+        columns_created = 0
+
+        for i, region in enumerate(self._detected_overhangs):
+            region_type = region["type"]
+
+            # Create tip column for tip regions
+            if region_type == "tip" and support_type in ["auto", "tip_column"]:
+                region_vertices = region["vertices"]
+                if len(region_vertices) > 0:
+                    min_y_idx = numpy.argmin(region_vertices[:, 1])
+                    tip_pos = region_vertices[min_y_idx]
+
+                    # Check for obstructions
+                    obstruction_y = self._find_obstruction_height(
+                        tip_pos[0], tip_pos[2], tip_pos[1], selected_node
+                    )
+
+                    base_y = obstruction_y if obstruction_y > 0 else 0.0
+
+                    if obstruction_y > 0:
+                        Logger.log("d", f"Column {i}: Found obstruction at Y={obstruction_y:.2f}")
+
+                    column_mesh = self._create_tip_column_mesh_v2(
+                        tip_pos,
+                        base_y=base_y,
+                        column_radius=self._column_radius,
+                        taper=self._column_taper,
+                        sides=self._column_sides
+                    )
+
+                    if column_mesh.getVertexCount() > 0:
+                        name = f"Tip Column {i}"
+                        if obstruction_y > 0:
+                            name += f" (on model @ {obstruction_y:.1f}mm)"
+                        self._create_support_mesh_node(column_mesh, name, selected_node)
+                        columns_created += 1
+
+            # Create edge rails for boundary regions
+            if region_type == "boundary" and support_type in ["auto", "edge_rail"]:
+                boundary_edges = self._find_boundary_edges(
+                    region["face_ids"], overhang_mask,
+                    self._overhang_adjacency, indices, vertices
+                )
+
+                # Merge nearby edges
+                merged_edges = self._merge_nearby_edges(boundary_edges, self._merge_edge_distance)
+
+                for j, (edge_start, edge_end) in enumerate(merged_edges):
+                    edge_center_y = (edge_start[1] + edge_end[1]) / 2
+                    edge_center_x = (edge_start[0] + edge_end[0]) / 2
+                    edge_center_z = (edge_start[2] + edge_end[2]) / 2
+
+                    # Check for obstructions
+                    obstruction_y = self._find_obstruction_height(
+                        edge_center_x, edge_center_z, edge_center_y, selected_node
+                    )
+
+                    base_y = obstruction_y if obstruction_y > 0 else 0.0
+
+                    rail_mesh = self._create_edge_rail_mesh_v2(
+                        edge_start, edge_end,
+                        base_y=base_y,
+                        rail_width=self._rail_width
+                    )
+
+                    if rail_mesh.getVertexCount() > 0:
+                        name = f"Edge Rail {i}-{j}"
+                        if obstruction_y > 0:
+                            name += f" (on model)"
+                        self._create_support_mesh_node(rail_mesh, name, selected_node)
+                        rails_created += 1
+
+        Logger.log("i", f"Refined support creation complete: "
                       f"{columns_created} columns, {rails_created} rails")

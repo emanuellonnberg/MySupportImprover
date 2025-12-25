@@ -475,10 +475,12 @@ If another part of the model is below:
 - [x] Orientation control (rotation -180° to 180°)
 - [x] Add as model geometry or separate body
 
-### Phase 4: Refinement
-- [ ] Handle obstructed paths (model-to-model support)
-- [ ] Optimize rail dimensions based on material/printer
-- [ ] User testing and iteration
+### Phase 4: Refinement ✅ FULLY IMPLEMENTED
+- [x] Handle obstructed paths (model-to-model support via ray casting)
+- [x] Edge merging algorithm (combines nearby boundary edges into longer rails)
+- [x] UI sliders for column radius (0.5-5.0mm), taper (20-100%), rail width (0.3-3.0mm)
+- [x] Configurable minimum rail length to filter out tiny edges
+- [x] Enhanced mesh generation methods (_v2) with base height support
 
 ## Open Questions
 
