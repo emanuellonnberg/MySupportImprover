@@ -132,6 +132,17 @@ def rebuild_indexed_mesh(vertices: np.ndarray, tolerance: float = 1e-4) -> Tuple
     return unique_vertices, indices
 
 
+def mesh_needs_index_rebuild(vertices: np.ndarray, indices: np.ndarray) -> bool:
+    """Return True when indexed mesh has no shared vertices (triangle soup)."""
+    if len(vertices) == 0 or len(indices) == 0:
+        return False
+    flat_indices = np.array(indices, dtype=np.int32).reshape(-1)
+    if len(flat_indices) == 0:
+        return False
+    usage = np.bincount(flat_indices, minlength=len(vertices))
+    return int(usage.max()) <= 1
+
+
 def load_exported_mesh(json_path: str) -> Tuple[np.ndarray, np.ndarray, int, bool]:
     """Load exported mesh data from JSON and return indexed geometry."""
     with open(json_path, "r") as handle:
@@ -143,6 +154,9 @@ def load_exported_mesh(json_path: str) -> Tuple[np.ndarray, np.ndarray, int, boo
     if has_indices:
         indices = np.array(data["indices"], dtype=np.int32)
         vertices = raw_vertices
+        if mesh_needs_index_rebuild(vertices, indices):
+            expanded_vertices = indices.reshape(-1)
+            vertices, indices = rebuild_indexed_mesh(vertices[expanded_vertices])
     else:
         vertices, indices = rebuild_indexed_mesh(raw_vertices)
 
@@ -790,16 +804,17 @@ class TestIntegration(unittest.TestCase):
 
 
 class TestExportedMeshOverhangs(unittest.TestCase):
-    """Tests using exported mesh data from test_data."""
+    """Tests using exported mesh data from tests/fixtures/exports."""
 
     @classmethod
     def setUpClass(cls):
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         cls.export_path = os.path.join(
             base_dir,
-            "test_data",
-            "MySupportImprover_exports",
-            "mesh_Component1_1.stl_20251226_003820.json",
+            "tests",
+            "fixtures",
+            "exports",
+            "component1_export.json",
         )
         cls.vertices, cls.indices, cls.raw_vertex_count, cls.has_indices = load_exported_mesh(cls.export_path)
 
@@ -863,6 +878,8 @@ class TestExportedMeshOverhangs(unittest.TestCase):
         face_centers = compute_face_centers(self.vertices, self.indices)
         mesh_min_y = float(self.vertices[:, 1].min())
         min_face_y = mesh_min_y + 0.2
+        if mesh_min_y > 0.5:
+            min_face_y = mesh_min_y
 
         dangling_vertex_mask = detect_dangling_vertices(
             self.vertices, self.indices, downward_mask, min_drop=0.05
@@ -905,6 +922,92 @@ class TestExportedMeshOverhangs(unittest.TestCase):
                 kept.append(region_dangling)
 
         self.assertEqual(len(kept), 2)
+
+
+class TestFloatingSphereOverhangs(unittest.TestCase):
+    """Ensure floating sphere exports form a connected overhang region."""
+
+    @classmethod
+    def setUpClass(cls):
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        cls.export_path = os.path.join(
+            base_dir,
+            "tests",
+            "fixtures",
+            "exports",
+            "floating_sphere_export.json",
+        )
+        cls.vertices, cls.indices, cls.raw_vertex_count, cls.has_indices = load_exported_mesh(cls.export_path)
+
+    def test_sphere_rebuilds_deindexed_mesh(self):
+        """Sphere export should rebuild to a shared-vertex mesh."""
+        self.assertTrue(self.has_indices)
+        self.assertLess(len(self.vertices), self.raw_vertex_count)
+
+    def test_sphere_overhang_region_is_kept(self):
+        """Auto-detect pipeline should keep the floating sphere overhang region."""
+        threshold = 65.0
+        overhang_ids, _ = detect_overhangs(self.vertices, self.indices, threshold_angle=threshold)
+        self.assertGreater(len(overhang_ids), 0)
+
+        adjacency = build_face_adjacency_graph(self.indices)
+        overhang_mask = np.zeros(len(self.indices), dtype=bool)
+        overhang_mask[overhang_ids] = True
+        regions = find_connected_overhang_regions(overhang_ids, overhang_mask, adjacency)
+        self.assertEqual(len(regions), 1)
+
+        face_centers = compute_face_centers(self.vertices, self.indices)
+        mesh_min_y = float(self.vertices[:, 1].min()) if len(self.vertices) else 0.0
+        min_face_y = mesh_min_y + 0.2
+        if mesh_min_y > 0.5:
+            min_face_y = mesh_min_y
+        min_delta_y = 0.05
+        max_lower_fraction = 0.5
+
+        filtered = []
+        for face_id in overhang_ids:
+            face_y = face_centers[face_id][1]
+            if face_y <= min_face_y:
+                continue
+            neighbors = adjacency.get(int(face_id), [])
+            if not neighbors:
+                filtered.append(int(face_id))
+                continue
+            lower_count = 0
+            for neighbor_id in neighbors:
+                if face_centers[neighbor_id][1] < (face_y - min_delta_y):
+                    lower_count += 1
+            if (lower_count / len(neighbors)) <= max_lower_fraction:
+                filtered.append(int(face_id))
+
+        filtered_set = set(filtered)
+        regions = [region for region in regions if any(face_id in filtered_set for face_id in region)]
+        self.assertEqual(len(regions), 1)
+
+        face_normals = compute_face_normals(self.vertices, self.indices)
+        lower_fraction, convex_pos, convex_total = compute_face_lower_fraction_and_convexity(
+            face_centers, face_normals, adjacency, min_delta_y=min_delta_y
+        )
+
+        region_lower_fraction_threshold = 0.35
+        mesh_min_y = float(self.vertices[:, 1].min()) if len(self.vertices) else 0.0
+        if mesh_min_y > 0.5:
+            region_lower_fraction_threshold = 0.45
+        convexity_threshold = 0.6
+        min_faces = 10
+        kept = []
+        for region in regions:
+            if float(lower_fraction[region].mean()) > region_lower_fraction_threshold:
+                continue
+            total = int(convex_total[region].sum())
+            if total > 0:
+                score = float(convex_pos[region].sum()) / total
+                if score < convexity_threshold:
+                    continue
+            if len(region) >= min_faces:
+                kept.append(region)
+
+        self.assertEqual(len(kept), 1)
 
 
 if __name__ == '__main__':

@@ -230,7 +230,7 @@ Item {
                 font: UM.Theme.getFont("default")
                 color: {
                     if (UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0) {
-                        return UM.Theme.getColor("text_success") || UM.Theme.getColor("text")
+                        return UM.Theme.getColor("primary")
                     }
                     return UM.Theme.getColor("text_inactive")
                 }

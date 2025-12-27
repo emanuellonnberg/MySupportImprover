@@ -12,6 +12,7 @@ from UM.Operations.TranslateOperation import TranslateOperation
 from UM.Operations.RotateOperation import RotateOperation
 from UM.Math.Quaternion import Quaternion
 import math
+import re
 from UM.Tool import Tool
 from UM.Event import Event, MouseEvent
 from UM.Mesh.MeshBuilder import MeshBuilder
@@ -910,14 +911,13 @@ class MySupportImprover(Tool):
         s_y = size_y / 2
         s_z = size_z / 2
 
-        # Switched Y and Z coordinates order to fix dimensions
-        verts = [ # 6 faces with 4 corners each:  [x, z, y] format
-            [-s_x,  s_z, -s_y], [-s_x,  s_z,  s_y], [ s_x,  s_z,  s_y], [ s_x,  s_z, -s_y],  # top
-            [-s_x, -s_z, -s_y], [-s_x, -s_z,  s_y], [ s_x, -s_z,  s_y], [ s_x, -s_z, -s_y],  # bottom
-            [-s_x, -s_z, -s_y], [-s_x,  s_z, -s_y], [ s_x,  s_z, -s_y], [ s_x, -s_z, -s_y],  # back
-            [-s_x, -s_z,  s_y], [-s_x,  s_z,  s_y], [ s_x,  s_z,  s_y], [ s_x, -s_z,  s_y],  # front
-            [-s_x, -s_z, -s_y], [-s_x, -s_z,  s_y], [-s_x,  s_z,  s_y], [-s_x,  s_z, -s_y],  # left
-            [ s_x, -s_z, -s_y], [ s_x, -s_z,  s_y], [ s_x,  s_z,  s_y], [ s_x,  s_z, -s_y]   # right
+        verts = [ # 6 faces with 4 corners each: [x, y, z] format
+            [-s_x,  s_y, -s_z], [-s_x,  s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x,  s_y, -s_z],  # top
+            [-s_x, -s_y, -s_z], [-s_x, -s_y,  s_z], [ s_x, -s_y,  s_z], [ s_x, -s_y, -s_z],  # bottom
+            [-s_x, -s_y, -s_z], [-s_x,  s_y, -s_z], [ s_x,  s_y, -s_z], [ s_x, -s_y, -s_z],  # back
+            [-s_x, -s_y,  s_z], [-s_x,  s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x, -s_y,  s_z],  # front
+            [-s_x, -s_y, -s_z], [-s_x, -s_y,  s_z], [-s_x,  s_y,  s_z], [-s_x,  s_y, -s_z],  # left
+            [ s_x, -s_y, -s_z], [ s_x, -s_y,  s_z], [ s_x,  s_y,  s_z], [ s_x,  s_y, -s_z]   # right
         ]
         mesh.setVertices(numpy.asarray(verts, dtype=numpy.float32))
 
@@ -1294,7 +1294,10 @@ class MySupportImprover(Tool):
 
             # Generate filename with timestamp
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            base_filename = f"mesh_{node.getName()}_{timestamp}"
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", node.getName()).strip("._")
+            if not safe_name:
+                safe_name = "model"
+            base_filename = f"mesh_{safe_name}_{timestamp}"
 
             # Export to STL (binary format)
             stl_path = os.path.join(output_dir, f"{base_filename}.stl")
@@ -1683,12 +1686,19 @@ class MySupportImprover(Tool):
             vertices_local = mesh_data.getVertices()
             world_transform = node.getWorldTransformation()
 
-            # Handle non-indexed meshes
+            # Handle non-indexed meshes or indexed meshes without shared vertices
+            reindexed = False
             if not mesh_data.hasIndices():
                 Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
                 vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
+                reindexed = True
             else:
                 indices = mesh_data.getIndices()
+                if self._meshNeedsIndexRebuild(vertices_local, indices):
+                    Logger.log("i", "Indexed mesh has no shared vertices; rebuilding indices for adjacency...")
+                    expanded_vertices = numpy.array(indices, dtype=numpy.int32).reshape(-1)
+                    vertices_local, indices = self._rebuildIndexedMesh(vertices_local[expanded_vertices])
+                    reindexed = True
 
             Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
 
@@ -1967,12 +1977,19 @@ class MySupportImprover(Tool):
             vertices_local = mesh_data.getVertices()
             world_transform = node.getWorldTransformation()
 
-            # Handle non-indexed meshes
+            # Handle non-indexed meshes or indexed meshes without shared vertices
+            reindexed = False
             if not mesh_data.hasIndices():
                 Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
                 vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
+                reindexed = True
             else:
                 indices = mesh_data.getIndices()
+                if self._meshNeedsIndexRebuild(vertices_local, indices):
+                    Logger.log("i", "Indexed mesh has no shared vertices; rebuilding indices for adjacency...")
+                    expanded_vertices = numpy.array(indices, dtype=numpy.int32).reshape(-1)
+                    vertices_local, indices = self._rebuildIndexedMesh(vertices_local[expanded_vertices])
+                    reindexed = True
 
             Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
 
@@ -1980,7 +1997,7 @@ class MySupportImprover(Tool):
 
             # Detect overhang faces using world-space normals for correct orientation
             face_normals_local = None
-            if mesh_data.hasNormals():
+            if mesh_data.hasNormals() and not reindexed:
                 normals = mesh_data.getNormals()
                 if normals is not None and len(normals) > 0:
                     normals = numpy.array(normals, dtype=numpy.float32)
@@ -2012,6 +2029,9 @@ class MySupportImprover(Tool):
             face_centers_world = self._computeFaceCenters(vertices_world, indices)
             mesh_min_y = float(vertices_world[:, 1].min()) if len(vertices_world) else 0.0
             min_face_y = mesh_min_y + 0.2
+            if mesh_min_y > 0.5:
+                min_face_y = mesh_min_y
+                Logger.log("d", "Floating mesh detected; skipping build-plate offset for filters")
             face_count = len(indices)
             overhang_mask = numpy.zeros(face_count, dtype=bool)
             if len(raw_overhang_ids) > 0:
@@ -2153,6 +2173,10 @@ class MySupportImprover(Tool):
 
             # Dangling regions should have mostly upward neighbors (few lower neighbors).
             region_lower_fraction_threshold = 0.35
+            if mesh_min_y > 0.5:
+                region_lower_fraction_threshold = 0.45
+                Logger.log("d", "Floating mesh detected; relaxing lower-neighbor threshold to %.2f",
+                           region_lower_fraction_threshold)
             convexity_threshold = 0.6
             for region_id, region_faces in enumerate(regions):
                 # If we have a target region, skip all others
@@ -2267,6 +2291,18 @@ class MySupportImprover(Tool):
         Logger.log("i", f"Vertex reduction: {reduction:.1f}% ({len(vertices)} â†’ {len(unique_vertices)})")
 
         return unique_vertices, indices
+
+    def _meshNeedsIndexRebuild(self, vertices, indices) -> bool:
+        """Return True when indexed mesh has no shared vertices (triangle soup)."""
+        if vertices is None or indices is None:
+            return False
+        if len(vertices) == 0 or len(indices) == 0:
+            return False
+        flat_indices = numpy.array(indices, dtype=numpy.int32).reshape(-1)
+        if len(flat_indices) == 0:
+            return False
+        usage = numpy.bincount(flat_indices, minlength=len(vertices))
+        return int(usage.max()) <= 1
 
     def _isFaceOverhang(self, vertices, indices, face_id, threshold_angle, transform=None):
         """Check if a single face is an overhang"""
