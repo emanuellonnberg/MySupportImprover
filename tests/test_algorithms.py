@@ -5,6 +5,8 @@ These tests focus on the pure algorithmic parts that don't require
 the full Cura framework - overhang detection, edge merging, etc.
 """
 
+import json
+import os
 import unittest
 import numpy as np
 from collections import deque
@@ -97,6 +99,204 @@ def detect_overhangs(vertices: np.ndarray, indices: np.ndarray,
     overhang_face_ids = np.where(overhang_mask)[0]
 
     return overhang_face_ids, angles
+
+
+def rebuild_indexed_mesh(vertices: np.ndarray, tolerance: float = 1e-4) -> Tuple[np.ndarray, np.ndarray]:
+    """Rebuild index buffer for non-indexed mesh by merging duplicate vertices."""
+    vertex_map = {}
+    unique_vertices = []
+    indices = []
+
+    for i in range(0, len(vertices), 3):
+        triangle_indices = []
+        for j in range(3):
+            if i + j >= len(vertices):
+                break
+            vertex = vertices[i + j]
+            vertex_key = tuple(np.round(vertex / tolerance) * tolerance)
+
+            if vertex_key in vertex_map:
+                triangle_indices.append(vertex_map[vertex_key])
+            else:
+                vertex_idx = len(unique_vertices)
+                unique_vertices.append(vertex)
+                vertex_map[vertex_key] = vertex_idx
+                triangle_indices.append(vertex_idx)
+
+        if len(triangle_indices) == 3:
+            indices.append(triangle_indices)
+
+    unique_vertices = np.array(unique_vertices, dtype=np.float32)
+    indices = np.array(indices, dtype=np.int32)
+
+    return unique_vertices, indices
+
+
+def load_exported_mesh(json_path: str) -> Tuple[np.ndarray, np.ndarray, int, bool]:
+    """Load exported mesh data from JSON and return indexed geometry."""
+    with open(json_path, "r") as handle:
+        data = json.load(handle)
+
+    raw_vertices = np.array(data["vertices"], dtype=np.float32)
+    has_indices = bool(data.get("has_indices"))
+
+    if has_indices:
+        indices = np.array(data["indices"], dtype=np.int32)
+        vertices = raw_vertices
+    else:
+        vertices, indices = rebuild_indexed_mesh(raw_vertices)
+
+    return vertices, indices, len(raw_vertices), has_indices
+
+
+def find_connected_overhang_regions(overhang_face_ids: np.ndarray,
+                                    overhang_mask: np.ndarray,
+                                    adjacency: Dict[int, List[int]]) -> List[List[int]]:
+    """Find all connected overhang regions using BFS."""
+    visited: Set[int] = set()
+    regions: List[List[int]] = []
+
+    for face_id in overhang_face_ids:
+        if face_id in visited:
+            continue
+        if not overhang_mask[face_id]:
+            continue
+
+        region = []
+        queue = deque([face_id])
+
+        while queue:
+            current_face = queue.popleft()
+            if current_face in visited:
+                continue
+            if not overhang_mask[current_face]:
+                continue
+
+            visited.add(current_face)
+            region.append(current_face)
+
+            for neighbor in adjacency.get(current_face, []):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+
+        regions.append(region)
+
+    return regions
+
+
+def compute_region_bounds(vertices: np.ndarray, indices: np.ndarray,
+                          region_face_ids: List[int]) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (min_bounds, max_bounds) for the given region."""
+    region_vertices = []
+    for face_id in region_face_ids:
+        face = indices[face_id]
+        region_vertices.extend([
+            vertices[face[0]],
+            vertices[face[1]],
+            vertices[face[2]],
+        ])
+
+    region_vertices = np.array(region_vertices, dtype=np.float32)
+    min_bounds = region_vertices.min(axis=0)
+    max_bounds = region_vertices.max(axis=0)
+
+    return min_bounds, max_bounds
+
+
+def compute_face_centers(vertices: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Compute face centroids for all faces."""
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+    return (v0 + v1 + v2) / 3.0
+
+
+def build_vertex_adjacency(indices: np.ndarray, vertex_count: int) -> List[Set[int]]:
+    """Build adjacency list for vertices based on shared edges."""
+    adjacency: List[Set[int]] = [set() for _ in range(vertex_count)]
+    for face in indices:
+        v0 = int(face[0])
+        v1 = int(face[1])
+        v2 = int(face[2])
+        adjacency[v0].update([v1, v2])
+        adjacency[v1].update([v0, v2])
+        adjacency[v2].update([v0, v1])
+    return adjacency
+
+
+def detect_dangling_vertices(vertices: np.ndarray, indices: np.ndarray,
+                             face_mask: np.ndarray, min_drop: float = 0.05) -> np.ndarray:
+    """Detect vertices with no neighboring vertices below them on candidate faces."""
+    dangling = np.zeros(len(vertices), dtype=bool)
+    candidate_faces = np.where(face_mask)[0]
+    if len(candidate_faces) == 0:
+        return dangling
+
+    vertex_ids = np.unique(indices[candidate_faces])
+    adjacency = build_vertex_adjacency(indices, len(vertices))
+
+    for vertex_id in vertex_ids:
+        neighbors = adjacency[int(vertex_id)]
+        if not neighbors:
+            dangling[int(vertex_id)] = True
+            continue
+
+        v_y = vertices[int(vertex_id)][1]
+        has_lower = any(vertices[n][1] < (v_y - min_drop) for n in neighbors)
+        if not has_lower:
+            dangling[int(vertex_id)] = True
+
+    return dangling
+
+
+def detect_dangling_faces(indices: np.ndarray, dangling_vertex_mask: np.ndarray,
+                          face_mask: np.ndarray) -> np.ndarray:
+    """Detect candidate faces that touch a dangling vertex."""
+    if len(indices) == 0:
+        return np.array([], dtype=np.int32)
+    face_has_dangling = np.any(dangling_vertex_mask[indices], axis=1)
+    face_mask = face_has_dangling & face_mask
+    return np.where(face_mask)[0].astype(np.int32)
+
+
+def compute_face_lower_fraction_and_convexity(face_centers: np.ndarray,
+                                              face_normals: np.ndarray,
+                                              adjacency: Dict[int, List[int]],
+                                              min_delta_y: float = 0.05
+                                              ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute lower-neighbor fractions and convexity counts per face."""
+    face_count = len(face_normals)
+    lower_fraction = np.zeros(face_count, dtype=np.float32)
+    convex_pos = np.zeros(face_count, dtype=np.int32)
+    convex_total = np.zeros(face_count, dtype=np.int32)
+
+    for face_id in range(face_count):
+        neighbors = adjacency.get(face_id, [])
+        if not neighbors:
+            continue
+
+        face_y = face_centers[face_id][1]
+        lower_count = 0
+        n1 = face_normals[face_id]
+        c1 = face_centers[face_id]
+
+        for neighbor_id in neighbors:
+            if face_centers[neighbor_id][1] < (face_y - min_delta_y):
+                lower_count += 1
+
+            n2 = face_normals[neighbor_id]
+            c2 = face_centers[neighbor_id]
+            dn = n2 - n1
+            dc = c2 - c1
+            s = float(np.dot(dn, dc))
+            if abs(s) > 1e-9:
+                convex_total[face_id] += 1
+                if s > 0:
+                    convex_pos[face_id] += 1
+
+        lower_fraction[face_id] = lower_count / len(neighbors)
+
+    return lower_fraction, convex_pos, convex_total
 
 
 def merge_nearby_edges(edges: List[Tuple[np.ndarray, np.ndarray]],
@@ -587,6 +787,124 @@ class TestIntegration(unittest.TestCase):
         region = find_connected_overhang_region(overhang_ids[0], overhang_mask, adjacency)
 
         self.assertEqual(len(region), 1)
+
+
+class TestExportedMeshOverhangs(unittest.TestCase):
+    """Tests using exported mesh data from test_data."""
+
+    @classmethod
+    def setUpClass(cls):
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        cls.export_path = os.path.join(
+            base_dir,
+            "test_data",
+            "MySupportImprover_exports",
+            "mesh_Component1_1.stl_20251226_003820.json",
+        )
+        cls.vertices, cls.indices, cls.raw_vertex_count, cls.has_indices = load_exported_mesh(cls.export_path)
+
+    def test_rebuild_indices_for_exported_mesh(self):
+        """Non-indexed exports should rebuild a valid index buffer."""
+        if self.has_indices:
+            self.skipTest("Export already indexed.")
+        self.assertEqual(self.raw_vertex_count % 3, 0)
+        self.assertEqual(len(self.indices), self.raw_vertex_count // 3)
+        self.assertLessEqual(len(self.vertices), self.raw_vertex_count)
+
+    def test_overhang_detection_invariant_to_uniform_scale(self):
+        """Overhang IDs should not change under uniform scale and translation."""
+        threshold = 45.0
+        overhang_ids, _ = detect_overhangs(self.vertices, self.indices, threshold_angle=threshold)
+
+        scale = 2.5
+        offset = np.array([10.0, -5.0, 3.0], dtype=np.float32)
+        vertices_scaled = self.vertices * scale + offset
+        overhang_ids_scaled, _ = detect_overhangs(vertices_scaled, self.indices, threshold_angle=threshold)
+
+        self.assertTrue(np.array_equal(overhang_ids, overhang_ids_scaled))
+
+    def test_overhang_region_bounds_scale_with_transform(self):
+        """Region bounds should scale and translate with transformed vertices."""
+        threshold = 45.0
+        overhang_ids, _ = detect_overhangs(self.vertices, self.indices, threshold_angle=threshold)
+        if len(overhang_ids) == 0:
+            self.skipTest("No overhangs detected in exported mesh.")
+
+        adjacency = build_face_adjacency_graph(self.indices)
+        overhang_mask = np.zeros(len(self.indices), dtype=bool)
+        overhang_mask[overhang_ids] = True
+        regions = find_connected_overhang_regions(overhang_ids, overhang_mask, adjacency)
+        if not regions:
+            self.skipTest("No connected overhang regions found in exported mesh.")
+
+        largest_region = max(regions, key=len)
+        min_bounds, max_bounds = compute_region_bounds(self.vertices, self.indices, largest_region)
+
+        scale = 2.5
+        offset = np.array([10.0, -5.0, 3.0], dtype=np.float32)
+        vertices_scaled = self.vertices * scale + offset
+        scaled_min, scaled_max = compute_region_bounds(vertices_scaled, self.indices, largest_region)
+
+        expected_min = min_bounds * scale + offset
+        expected_max = max_bounds * scale + offset
+
+        self.assertTrue(np.allclose(scaled_min, expected_min, atol=1e-4))
+        self.assertTrue(np.allclose(scaled_max, expected_max, atol=1e-4))
+
+    def test_dangling_vertex_detection_finds_two_regions(self):
+        """Dangling-vertex pipeline should find two dangling regions in the export."""
+        face_normals = compute_face_normals(self.vertices, self.indices)
+        build_direction = np.array([0.0, -1.0, 0.0], dtype=np.float32)
+        downward_mask = (face_normals @ build_direction) > 0.0
+        if not downward_mask.any():
+            self.skipTest("No downward faces detected in exported mesh.")
+
+        adjacency = build_face_adjacency_graph(self.indices)
+        face_centers = compute_face_centers(self.vertices, self.indices)
+        mesh_min_y = float(self.vertices[:, 1].min())
+        min_face_y = mesh_min_y + 0.2
+
+        dangling_vertex_mask = detect_dangling_vertices(
+            self.vertices, self.indices, downward_mask, min_drop=0.05
+        )
+        dangling_face_ids = detect_dangling_faces(
+            self.indices, dangling_vertex_mask, downward_mask
+        )
+        if len(dangling_face_ids) == 0:
+            self.fail("No dangling faces found in exported mesh.")
+
+        dangling_face_ids = dangling_face_ids[face_centers[dangling_face_ids][:, 1] > min_face_y]
+        if len(dangling_face_ids) == 0:
+            self.fail("Dangling faces filtered out near build plate.")
+
+        downward_face_ids = np.where(downward_mask)[0]
+        regions = find_connected_overhang_regions(downward_face_ids, downward_mask, adjacency)
+        dangling_set = set(int(face_id) for face_id in dangling_face_ids)
+        regions = [region for region in regions if any(face_id in dangling_set for face_id in region)]
+
+        lower_fraction, convex_pos, convex_total = compute_face_lower_fraction_and_convexity(
+            face_centers, face_normals, adjacency, min_delta_y=0.05
+        )
+
+        region_lower_fraction_threshold = 0.35
+        convexity_threshold = 0.6
+        min_faces = 10
+        kept = []
+        for region in regions:
+            region_dangling = [face_id for face_id in region if face_id in dangling_set]
+            if not region_dangling:
+                continue
+            if float(lower_fraction[region_dangling].mean()) > region_lower_fraction_threshold:
+                continue
+            total = int(convex_total[region_dangling].sum())
+            if total > 0:
+                score = float(convex_pos[region_dangling].sum()) / total
+                if score < convexity_threshold:
+                    continue
+            if len(region_dangling) >= min_faces:
+                kept.append(region_dangling)
+
+        self.assertEqual(len(kept), 2)
 
 
 if __name__ == '__main__':

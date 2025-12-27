@@ -122,7 +122,7 @@ def rebuild_indexed_mesh(vertices):
     unique_vertices = []
     indices = []
 
-    tolerance = 1e-6  # Vertices within this distance are considered the same
+    tolerance = 1e-4  # Vertices within this distance are considered the same
 
     for i in range(0, len(vertices), 3):
         # Process each triangle (3 vertices)

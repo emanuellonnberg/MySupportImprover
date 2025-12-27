@@ -145,11 +145,12 @@ class MySupportImprover(Tool):
         self._auto_detect = False  # Automatic overhang detection mode (all regions)
         self._single_region = False  # Single region mode (fast, one region only)
         self._detect_sharp_features = False  # Sharp feature detection mode (for pointy things)
+        self._detect_dangling_vertices = False  # Vertex-based dangling detection mode
 
         self.setExposedProperties(
             "CubeX", "CubeY", "CubeZ", "ShowSettings", "CanModify", "Presets",
             "SupportAngle", "CurrentPreset", "IsCustom",
-            "ExportMode", "AutoDetect", "SingleRegion", "DetectSharpFeatures",
+            "ExportMode", "AutoDetect", "SingleRegion", "DetectSharpFeatures", "DetectDanglingVertices",
             # Support mode properties
             "SupportMode", "SupportModes", "SupportPattern", "SupportInfillRate",
             "SupportLineWidth", "SupportWallCount", "SupportInterfaceEnable",
@@ -537,6 +538,20 @@ class MySupportImprover(Tool):
 
     DetectSharpFeatures = pyqtProperty(bool, fget=getDetectSharpFeatures, fset=setDetectSharpFeatures)
 
+    def getDetectDanglingVertices(self) -> bool:
+        return self._detect_dangling_vertices
+
+    def setDetectDanglingVertices(self, value: bool) -> None:
+        if value != self._detect_dangling_vertices:
+            self._detect_dangling_vertices = value
+            if value:
+                Logger.log("i", "Dangling vertex detection ENABLED - will filter to vertex-local minima")
+            else:
+                Logger.log("i", "Dangling vertex detection DISABLED")
+            self.propertyChanged.emit()
+
+    DetectDanglingVertices = pyqtProperty(bool, fget=getDetectDanglingVertices, fset=setDetectDanglingVertices)
+
     def getQmlPath(self):
         """Return the path to the QML file for the tool panel."""
         qml_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "qt6", "SupportImprover.qml")
@@ -566,6 +581,7 @@ class MySupportImprover(Tool):
             if not picked_node:
                 # There is no slicable object at the picked location
                 return
+            Logger.log("i", "Click mode: export=%s, auto=%s, single=%s", str(self._export_mode), str(self._auto_detect), str(self._single_region))
 
             # EXPORT MODE: Export mesh for debugging
             if self._export_mode:
@@ -1290,6 +1306,18 @@ class MySupportImprover(Tool):
             self._exportToJSON(mesh_data, node, json_path, picked_position)
             Logger.log("i", f"Exported JSON to: {json_path}")
 
+            # Export overhang debug data
+            debug_json_path = os.path.join(output_dir, f"{base_filename}_overhang_debug.json")
+            debug_stl_path = os.path.join(output_dir, f"{base_filename}_overhang_faces.stl")
+            self._exportOverhangDebug(mesh_data, debug_json_path, debug_stl_path, self._overhang_threshold)
+            Logger.log("i", f"Exported overhang debug JSON to: {debug_json_path}")
+            Logger.log("i", f"Exported overhang faces STL to: {debug_stl_path}")
+
+            # Export current support volumes (cutting_mesh) attached to this model
+            volumes_json_path = os.path.join(output_dir, f"{base_filename}_volumes.json")
+            self._exportSupportVolumes(node, volumes_json_path)
+            Logger.log("i", f"Exported support volumes JSON to: {volumes_json_path}")
+
             Logger.log("i", f"=== EXPORT COMPLETE ===")
             Logger.log("i", f"Files saved to: {output_dir}")
 
@@ -1398,6 +1426,187 @@ class MySupportImprover(Tool):
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
 
+    def _exportOverhangDebug(self, mesh_data, json_path, stl_path, threshold_angle: float):
+        """Export overhang detection diagnostics for a mesh."""
+        vertices = mesh_data.getVertices()
+
+        if mesh_data.hasIndices():
+            indices = mesh_data.getIndices()
+        else:
+            indices = numpy.arange(len(vertices)).reshape(-1, 3)
+
+        # Prefer provided normals if available
+        face_normals = None
+        if mesh_data.hasNormals():
+            normals = mesh_data.getNormals()
+            if normals is not None and len(normals) > 0:
+                normals = numpy.array(normals, dtype=numpy.float32)
+                if len(normals) == len(vertices):
+                    face_normals = self._computeFaceNormalsFromVertexNormals(normals, indices)
+                elif len(normals) == len(indices):
+                    face_normals = normals
+
+        if face_normals is None:
+            face_normals = self._compute_face_normals(vertices, indices)
+
+        # Overhang detection
+        overhang_face_ids = self._detectOverhangFacesFromNormals(face_normals, threshold_angle)
+        overhang_set = set(int(face_id) for face_id in overhang_face_ids)
+
+        # Apply neighbor-height filter (same as auto-detect)
+        adjacency = self._buildAdjacencyGraph(indices)
+        face_centers = self._computeFaceCenters(vertices, indices)
+        filtered_overhang_ids = self._filterOverhangFacesByNeighborHeight(
+            overhang_face_ids,
+            adjacency,
+            face_centers,
+            min_delta_y=0.05,
+            max_lower_fraction=0.5,
+            min_face_y=0.2,
+            obstruction_vertices=vertices,
+            obstruction_indices=indices,
+            min_clearance=0.0
+        )
+        filtered_overhang_set = set(int(face_id) for face_id in filtered_overhang_ids)
+
+        # Angle per face (for debugging)
+        build_direction = numpy.array([0.0, -1.0, 0.0])
+        dot_products = numpy.dot(face_normals, build_direction)
+        dot_products = numpy.clip(dot_products, -1.0, 1.0)
+        angles = numpy.degrees(numpy.arccos(dot_products))
+
+        # Per-face debug data
+        faces_debug = []
+        for face_id, face in enumerate(indices):
+            v0 = vertices[face[0]]
+            v1 = vertices[face[1]]
+            v2 = vertices[face[2]]
+            center = (v0 + v1 + v2) / 3.0
+
+            faces_debug.append({
+                "face_id": int(face_id),
+                "center": [float(center[0]), float(center[1]), float(center[2])],
+                "normal": [float(face_normals[face_id][0]), float(face_normals[face_id][1]), float(face_normals[face_id][2])],
+                "angle_to_down": float(angles[face_id]),
+                "is_overhang_raw": face_id in overhang_set,
+                "is_overhang_filtered": face_id in filtered_overhang_set,
+            })
+
+        debug_payload = {
+            "threshold_angle": float(threshold_angle),
+            "face_count": int(len(indices)),
+            "overhang_face_count_raw": int(len(overhang_face_ids)),
+            "overhang_face_ids_raw": [int(face_id) for face_id in overhang_face_ids],
+            "overhang_face_count_filtered": int(len(filtered_overhang_ids)),
+            "overhang_face_ids_filtered": [int(face_id) for face_id in filtered_overhang_ids],
+            "faces": faces_debug,
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(debug_payload, f, indent=2)
+
+        # Export only filtered overhang faces as STL for visual inspection
+        self._exportFacesToSTL(vertices, indices, filtered_overhang_ids, stl_path)
+
+    def _exportFacesToSTL(self, vertices, indices, face_ids, filepath):
+        """Export selected faces to binary STL format."""
+        import struct
+
+        face_ids = list(face_ids)
+        with open(filepath, 'wb') as f:
+            header = b'Overhang faces exported from MySupportImprover'
+            header = header.ljust(80, b'\x00')
+            f.write(header)
+
+            f.write(struct.pack("<I", int(len(face_ids))))
+
+            for face_id in face_ids:
+                face = indices[int(face_id)]
+                v0 = vertices[face[0]]
+                v1 = vertices[face[1]]
+                v2 = vertices[face[2]]
+
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = numpy.cross(edge1, edge2)
+                normal_length = numpy.linalg.norm(normal)
+                if normal_length > 1e-10:
+                    normal = normal / normal_length
+                else:
+                    normal = numpy.array([0.0, 0.0, 1.0])
+
+                f.write(struct.pack("<fff", float(normal[0]), float(normal[1]), float(normal[2])))
+                f.write(struct.pack("<fff", float(v0[0]), float(v0[1]), float(v0[2])))
+                f.write(struct.pack("<fff", float(v1[0]), float(v1[1]), float(v1[2])))
+                f.write(struct.pack("<fff", float(v2[0]), float(v2[1]), float(v2[2])))
+                f.write(struct.pack("<H", 0))
+
+    def _exportSupportVolumes(self, model_node: CuraSceneNode, json_path: str) -> None:
+        """Export cutting volumes attached to the selected model."""
+        def collect_nodes(root):
+            nodes = [root]
+            if hasattr(root, "getChildren"):
+                for child in root.getChildren():
+                    nodes.extend(collect_nodes(child))
+            return nodes
+
+        def is_descendant(node, ancestor):
+            current = node
+            while current is not None:
+                if current == ancestor:
+                    return True
+                if hasattr(current, "getParent"):
+                    current = current.getParent()
+                else:
+                    break
+            return False
+
+        scene_root = self._controller.getScene().getRoot()
+        volumes = []
+
+        for node in collect_nodes(scene_root):
+            if node == model_node:
+                continue
+            try:
+                if self.getMeshType(node) != "cutting_mesh":
+                    continue
+            except Exception:
+                continue
+
+            if not is_descendant(node, model_node):
+                continue
+
+            mesh_data = node.getMeshData()
+            if not mesh_data:
+                continue
+
+            transformed = mesh_data.getTransformed(node.getWorldTransformation())
+            vertices = transformed.getVertices()
+            if vertices is None or len(vertices) == 0:
+                continue
+
+            min_bounds = vertices.min(axis=0)
+            max_bounds = vertices.max(axis=0)
+            center = (min_bounds + max_bounds) / 2.0
+            size = max_bounds - min_bounds
+
+            volumes.append({
+                "name": node.getName(),
+                "center": [float(center[0]), float(center[1]), float(center[2])],
+                "size": [float(size[0]), float(size[1]), float(size[2])],
+                "min": [float(min_bounds[0]), float(min_bounds[1]), float(min_bounds[2])],
+                "max": [float(max_bounds[0]), float(max_bounds[1]), float(max_bounds[2])],
+            })
+
+        payload = {
+            "model_name": model_node.getName(),
+            "volume_count": len(volumes),
+            "volumes": volumes,
+        }
+
+        with open(json_path, 'w') as f:
+            json.dump(payload, f, indent=2)
+
     def _findClosestFace(self, vertices, indices, point):
         """Find the closest face to a given point"""
         min_distance = float('inf')
@@ -1421,26 +1630,29 @@ class MySupportImprover(Tool):
 
         return closest_face_id, min_distance
 
-    def _findClickedRegion(self, picked_position, regions, vertices_local, indices, world_transform):
+    def _findClickedRegion(self, picked_position, regions, vertices, indices, world_transform=None):
         """Find which overhang region contains the clicked position
 
         Args:
             picked_position: World-space position where user clicked
             regions: List of overhang regions (each is a list of face IDs)
-            vertices_local: Vertex positions in local space
+            vertices: Vertex positions in the same space as picked_position
             indices: Face indices
-            world_transform: Transformation to convert local to world space
+            world_transform: Optional transformation to convert local to world space
 
         Returns:
             Region index if found, None otherwise
         """
-        # Convert picked position to local space
-        inverse_transform = world_transform.getInverse()
-        picked_local = picked_position.preMultiply(inverse_transform)
-        picked_point = numpy.array([picked_local.x, picked_local.y, picked_local.z])
+        if world_transform:
+            # Convert picked position to local space
+            inverse_transform = world_transform.getInverse()
+            picked_local = picked_position.preMultiply(inverse_transform)
+            picked_point = numpy.array([picked_local.x, picked_local.y, picked_local.z])
+        else:
+            picked_point = numpy.array([picked_position.x, picked_position.y, picked_position.z])
 
         # Find closest face to clicked position
-        closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
+        closest_face_id, closest_distance = self._findClosestFace(vertices, indices, picked_point)
 
         Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
 
@@ -1559,6 +1771,176 @@ class MySupportImprover(Tool):
             import traceback
             Logger.log("e", traceback.format_exc())
 
+    def _transformVertices(self, vertices: numpy.ndarray, transform) -> numpy.ndarray:
+        """Apply a world transform to vertex positions."""
+        transform_data = transform.getData()
+        rotation_matrix = transform_data[0:3, 0:3]
+        translation = transform_data[0:3, 3]
+        return (vertices @ rotation_matrix.T) + translation
+
+    def _transformNormals(self, normals: numpy.ndarray, transform) -> numpy.ndarray:
+        """Apply a world transform to normals (handles non-uniform scaling)."""
+        transform_data = transform.getData()
+        matrix = transform_data[0:3, 0:3]
+        try:
+            normal_matrix = numpy.linalg.inv(matrix).T
+        except numpy.linalg.LinAlgError:
+            normal_matrix = matrix
+
+        normals_world = normals @ normal_matrix.T
+        lengths = numpy.linalg.norm(normals_world, axis=1, keepdims=True)
+        return normals_world / numpy.maximum(lengths, 1e-10)
+
+    def _computeFaceNormalsFromVertexNormals(self, vertex_normals: numpy.ndarray,
+                                             indices: numpy.ndarray) -> numpy.ndarray:
+        """Compute face normals by averaging vertex normals."""
+        face_normals = vertex_normals[indices].mean(axis=1)
+        lengths = numpy.linalg.norm(face_normals, axis=1, keepdims=True)
+        return face_normals / numpy.maximum(lengths, 1e-10)
+
+    def _computeFaceCenters(self, vertices: numpy.ndarray, indices: numpy.ndarray) -> numpy.ndarray:
+        """Compute face centroids for all faces."""
+        v0 = vertices[indices[:, 0]]
+        v1 = vertices[indices[:, 1]]
+        v2 = vertices[indices[:, 2]]
+        return (v0 + v1 + v2) / 3.0
+
+    def _detectOverhangFacesFromNormals(self, face_normals_world: numpy.ndarray,
+                                        threshold_angle: float) -> numpy.ndarray:
+        """Detect overhang faces using precomputed world-space normals."""
+        build_direction = numpy.array([0.0, -1.0, 0.0])
+        dot_products = numpy.dot(face_normals_world, build_direction)
+        dot_products = numpy.clip(dot_products, -1.0, 1.0)
+        angles = numpy.degrees(numpy.arccos(dot_products))
+
+        overhang_mask = angles < (90.0 - threshold_angle)
+        return numpy.where(overhang_mask)[0]
+
+    def _find_obstruction_height_in_mesh(self, x: float, z: float, max_y: float,
+                                         vertices: numpy.ndarray, indices: numpy.ndarray,
+                                         tolerance: float = 0.5, max_y_epsilon: float = 0.05) -> float:
+        """Find highest mesh point below (x, z) within the provided mesh."""
+        highest_y = 0.0
+
+        for face in indices:
+            v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+
+            min_x = min(v0[0], v1[0], v2[0]) - tolerance
+            max_x = max(v0[0], v1[0], v2[0]) + tolerance
+            min_z = min(v0[2], v1[2], v2[2]) - tolerance
+            max_z = max(v0[2], v1[2], v2[2]) + tolerance
+
+            if x < min_x or x > max_x or z < min_z or z > max_z:
+                continue
+
+            denom = (v1[2] - v2[2]) * (v0[0] - v2[0]) + (v2[0] - v1[0]) * (v0[2] - v2[2])
+            if abs(denom) < 1e-10:
+                continue
+
+            a = ((v1[2] - v2[2]) * (x - v2[0]) + (v2[0] - v1[0]) * (z - v2[2])) / denom
+            b = ((v2[2] - v0[2]) * (x - v2[0]) + (v0[0] - v2[0]) * (z - v2[2])) / denom
+            c = 1.0 - a - b
+
+            if a >= -0.1 and b >= -0.1 and c >= -0.1:
+                y = a * v0[1] + b * v1[1] + c * v2[1]
+                if y < max_y - max_y_epsilon and y > highest_y:
+                    highest_y = y
+
+        return highest_y
+
+    def _filterOverhangFacesByNeighborHeight(self, overhang_face_ids: numpy.ndarray,
+                                             adjacency: Dict[int, List[int]],
+                                             face_centers_world: numpy.ndarray,
+                                             min_delta_y: float = 0.05,
+                                             max_lower_fraction: float = 0.5,
+                                             min_face_y: float = 0.2,
+                                             obstruction_vertices: Optional[numpy.ndarray] = None,
+                                             obstruction_indices: Optional[numpy.ndarray] = None,
+                                             min_clearance: float = 0.0) -> numpy.ndarray:
+        """Filter overhang faces using neighbor height, build-plate proximity, and obstructions."""
+        filtered = []
+        for face_id in overhang_face_ids:
+            neighbors = adjacency.get(int(face_id), [])
+            face_y = face_centers_world[int(face_id)][1]
+            if face_y <= min_face_y:
+                continue
+
+            if not neighbors:
+                filtered.append(int(face_id))
+                continue
+
+            lower_count = 0
+            for neighbor_id in neighbors:
+                if face_centers_world[neighbor_id][1] < (face_y - min_delta_y):
+                    lower_count += 1
+
+            if (lower_count / len(neighbors)) <= max_lower_fraction:
+                if min_clearance > 0.0 and obstruction_vertices is not None and obstruction_indices is not None:
+                    face_x = face_centers_world[int(face_id)][0]
+                    face_z = face_centers_world[int(face_id)][2]
+                    obstruction_y = self._find_obstruction_height_in_mesh(
+                        face_x, face_z, face_y, obstruction_vertices, obstruction_indices
+                    )
+                    if obstruction_y > 0.0 and (face_y - obstruction_y) <= min_clearance:
+                        continue
+                filtered.append(int(face_id))
+
+        return numpy.array(filtered, dtype=numpy.int32)
+
+    def _buildVertexAdjacency(self, indices: numpy.ndarray, vertex_count: int) -> List[Set[int]]:
+        """Build adjacency list for vertices based on shared edges."""
+        adjacency: List[Set[int]] = [set() for _ in range(vertex_count)]
+        for face in indices:
+            v0 = int(face[0])
+            v1 = int(face[1])
+            v2 = int(face[2])
+            adjacency[v0].update([v1, v2])
+            adjacency[v1].update([v0, v2])
+            adjacency[v2].update([v0, v1])
+        return adjacency
+
+    def _detectDanglingVertices(self, vertices_world: numpy.ndarray, indices: numpy.ndarray,
+                                face_mask: numpy.ndarray, min_drop: float = 0.05) -> numpy.ndarray:
+        """Detect vertices with no neighboring vertices below them on candidate faces."""
+        vertex_count = len(vertices_world)
+        dangling = numpy.zeros(vertex_count, dtype=bool)
+        if vertex_count == 0:
+            return dangling
+
+        candidate_faces = numpy.where(face_mask)[0]
+        if len(candidate_faces) == 0:
+            return dangling
+
+        overhang_vertex_ids = numpy.unique(indices[candidate_faces])
+        adjacency = self._buildVertexAdjacency(indices, vertex_count)
+
+        for vertex_id in overhang_vertex_ids:
+            neighbors = adjacency[int(vertex_id)]
+            if not neighbors:
+                dangling[int(vertex_id)] = True
+                continue
+
+            v_y = vertices_world[int(vertex_id)][1]
+            has_lower = False
+            for neighbor_id in neighbors:
+                if vertices_world[neighbor_id][1] < (v_y - min_drop):
+                    has_lower = True
+                    break
+            if not has_lower:
+                dangling[int(vertex_id)] = True
+
+        return dangling
+
+    def _detectDanglingFacesFromVertices(self, indices: numpy.ndarray,
+                                         dangling_vertex_mask: numpy.ndarray,
+                                         face_mask: numpy.ndarray) -> numpy.ndarray:
+        """Detect candidate faces that touch a dangling vertex."""
+        if len(indices) == 0:
+            return numpy.array([], dtype=numpy.int32)
+        face_has_dangling = numpy.any(dangling_vertex_mask[indices], axis=1)
+        face_mask = face_has_dangling & face_mask
+        return numpy.where(face_mask)[0].astype(numpy.int32)
+
     def _autoDetectOverhangs(self, node: CuraSceneNode, picked_position: Vector = None):
         """Automatically detect overhangs and create support blockers
 
@@ -1572,12 +1954,17 @@ class MySupportImprover(Tool):
 
         try:
             Logger.log("i", "=== AUTO OVERHANG DETECTION ===")
+            Logger.log(
+                "i",
+                "Auto-detect settings: threshold=%.1f, sharp_features=%s, dangling_vertices=%s",
+                float(self._overhang_threshold),
+                str(self._detect_sharp_features),
+                str(self._detect_dangling_vertices),
+            )
 
-            # Get mesh data in LOCAL space (not transformed)
+            # Get mesh data in LOCAL space (bounds/sizes should be in local coordinates)
             mesh_data = node.getMeshData()
             vertices_local = mesh_data.getVertices()
-
-            # Get transformation matrix to transform normals to world space for overhang detection
             world_transform = node.getWorldTransformation()
 
             # Handle non-indexed meshes
@@ -1589,27 +1976,167 @@ class MySupportImprover(Tool):
 
             Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
 
-            # Detect overhang faces (pass transformation to handle rotation)
-            overhang_face_ids = self._detectOverhangFaces(vertices_local, indices, self._overhang_threshold, world_transform)
-            Logger.log("i", f"Found {len(overhang_face_ids)} overhang faces")
+            vertices_world = self._transformVertices(vertices_local, world_transform)
 
-            if len(overhang_face_ids) == 0:
-                Logger.log("i", "No overhangs detected")
-                return
+            # Detect overhang faces using world-space normals for correct orientation
+            face_normals_local = None
+            if mesh_data.hasNormals():
+                normals = mesh_data.getNormals()
+                if normals is not None and len(normals) > 0:
+                    normals = numpy.array(normals, dtype=numpy.float32)
+                    if mesh_data.hasIndices():
+                        if len(normals) == len(vertices_local):
+                            face_normals_local = self._computeFaceNormalsFromVertexNormals(normals, indices)
+                        elif len(normals) == len(indices):
+                            face_normals_local = normals
+                    else:
+                        if len(normals) == len(vertices_local):
+                            face_normals_local = normals.reshape(-1, 3, 3).mean(axis=1)
+                            lengths = numpy.linalg.norm(face_normals_local, axis=1, keepdims=True)
+                            face_normals_local = face_normals_local / numpy.maximum(lengths, 1e-10)
+                        elif len(normals) == len(indices):
+                            face_normals_local = normals
 
-            # Find connected regions
-            regions = self._findConnectedRegions(vertices_local, indices, overhang_face_ids)
-            Logger.log("i", f"Found {len(regions)} connected overhang regions")
+                    if face_normals_local is not None:
+                        Logger.log("d", "Using mesh normals for overhang detection")
+
+            face_normals_geom_local = self._compute_face_normals(vertices_local, indices)
+            if face_normals_local is None:
+                face_normals_local = face_normals_geom_local
+
+            face_normals_world = self._transformNormals(face_normals_local, world_transform)
+            face_normals_geom_world = self._compute_face_normals(vertices_world, indices)
+            raw_overhang_ids = self._detectOverhangFacesFromNormals(face_normals_world, self._overhang_threshold)
+
+            adjacency_all = self._buildAdjacencyGraph(indices)
+            face_centers_world = self._computeFaceCenters(vertices_world, indices)
+            mesh_min_y = float(vertices_world[:, 1].min()) if len(vertices_world) else 0.0
+            min_face_y = mesh_min_y + 0.2
+            face_count = len(indices)
+            overhang_mask = numpy.zeros(face_count, dtype=bool)
+            if len(raw_overhang_ids) > 0:
+                overhang_mask[raw_overhang_ids] = True
+            build_direction = numpy.array([0.0, -1.0, 0.0])
+            normals_for_dangling = face_normals_geom_world if self._detect_dangling_vertices else face_normals_world
+            downward_mask = numpy.dot(normals_for_dangling, build_direction) > 0.0
+            downward_face_ids = numpy.where(downward_mask)[0]
+
+            face_lower_fraction = numpy.zeros(face_count, dtype=numpy.float32)
+            convex_pos_counts = numpy.zeros(face_count, dtype=numpy.int32)
+            convex_total_counts = numpy.zeros(face_count, dtype=numpy.int32)
+            normals_for_stats = normals_for_dangling if self._detect_dangling_vertices else face_normals_world
+
+            for face_id in range(face_count):
+                neighbors = adjacency_all.get(face_id, [])
+                if not neighbors:
+                    continue
+
+                face_y = face_centers_world[face_id][1]
+                lower_count = 0
+
+                n1 = normals_for_stats[face_id]
+                c1 = face_centers_world[face_id]
+
+                for neighbor_id in neighbors:
+                    if face_centers_world[neighbor_id][1] < (face_y - 0.05):
+                        lower_count += 1
+
+                    n2 = normals_for_stats[neighbor_id]
+                    c2 = face_centers_world[neighbor_id]
+                    dn = n2 - n1
+                    dc = c2 - c1
+                    s = numpy.dot(dn, dc)
+                    if abs(s) > 1e-9:
+                        convex_total_counts[face_id] += 1
+                        if s > 0:
+                            convex_pos_counts[face_id] += 1
+
+                face_lower_fraction[face_id] = lower_count / len(neighbors)
+            Logger.log("i", f"Found {len(raw_overhang_ids)} overhang faces")
+
+            dangling_face_set = None
+            dangling_face_ids = numpy.array([], dtype=numpy.int32)
+            if self._detect_dangling_vertices:
+                dangling_vertex_mask = self._detectDanglingVertices(
+                    vertices_world, indices, downward_mask, min_drop=0.05
+                )
+                dangling_face_ids = self._detectDanglingFacesFromVertices(
+                    indices, dangling_vertex_mask, downward_mask
+                )
+                Logger.log("i", f"Dangling vertex detector found {int(dangling_vertex_mask.sum())} vertices "
+                                f"and {len(dangling_face_ids)} faces")
+                if len(dangling_face_ids) > 0:
+                    dangling_face_ids = dangling_face_ids[face_centers_world[dangling_face_ids][:, 1] > min_face_y]
+                    Logger.log("i", f"Dangling faces after build-plate filter: {len(dangling_face_ids)}")
+                    if len(dangling_face_ids) == 0:
+                        Logger.log("i", "Dangling faces filtered out near build plate")
+                if len(dangling_face_ids) > 0:
+                    dangling_face_set = set(int(face_id) for face_id in dangling_face_ids)
+                else:
+                    Logger.log("i", "Dangling vertex detector found no faces - skipping vertex filter")
+
+            region_source_ids = raw_overhang_ids
+            region_source_label = "overhang"
+            use_neighbor_filter = True
+            if self._detect_dangling_vertices:
+                if len(dangling_face_ids) > 0:
+                    region_source_ids = downward_face_ids
+                    region_source_label = "downward"
+                    use_neighbor_filter = False
+                    Logger.log("i", "Using downward faces for regions (dangling-vertex mode)")
+                else:
+                    Logger.log("i", "No dangling faces found - falling back to overhang regions")
+
+            filtered_overhang_ids = region_source_ids
+            if use_neighbor_filter and len(region_source_ids) > 0:
+                filtered_overhang_ids = self._filterOverhangFacesByNeighborHeight(
+                    region_source_ids,
+                    adjacency_all,
+                    face_centers_world,
+                    min_delta_y=0.05,
+                    max_lower_fraction=0.5,
+                    min_face_y=min_face_y,
+                    obstruction_vertices=vertices_world,
+                    obstruction_indices=indices,
+                    min_clearance=0.0
+                )
+                if len(filtered_overhang_ids) != len(region_source_ids):
+                    Logger.log("i", f"Filtered to {len(filtered_overhang_ids)} faces after neighbor-height check")
+
+            regions = []
+            filtered_set = set(int(face_id) for face_id in filtered_overhang_ids)
+            if len(region_source_ids) == 0:
+                if self._detect_sharp_features:
+                    Logger.log("i", "No detection faces found - falling back to sharp feature detection")
+                else:
+                    Logger.log("i", "No overhangs detected")
+                    return
+            else:
+                # Find connected regions using selected detection faces, then keep regions with filtered faces
+                regions = self._findConnectedRegions(vertices_local, indices, region_source_ids)
+                Logger.log("i", f"Found {len(regions)} connected {region_source_label} regions")
+
+                if use_neighbor_filter:
+                    if len(filtered_set) > 0:
+                        regions = [r for r in regions if any(face_id in filtered_set for face_id in r)]
+                        Logger.log("i", f"Kept {len(regions)} regions after neighbor-height filter")
+                    else:
+                        Logger.log("i", "All detection faces filtered out by neighbor-height check")
+                        regions = []
 
             # Apply sharp feature detection if enabled
             if self._detect_sharp_features:
                 Logger.log("i", "Sharp feature detection enabled - analyzing vertex curvature...")
-                sharp_vertices = self._detectSharpVertices(vertices_local, indices, curvature_threshold=2.0)
+                sharp_vertices = self._detectSharpVertices(vertices_world, indices, curvature_threshold=2.0)
                 if len(sharp_vertices) > 0:
                     Logger.log("i", f"Detected {len(sharp_vertices)} sharp vertices - expanding regions...")
-                    regions = self._expandRegionsWithSharpFeatures(vertices_local, indices, regions,
+                    regions = self._expandRegionsWithSharpFeatures(vertices_world, indices, regions,
                                                                    sharp_vertices, expansion_radius=5.0)
                     Logger.log("i", f"After sharp feature expansion: {len(regions)} total regions")
+
+            if dangling_face_set is not None:
+                regions = [r for r in regions if any(face_id in dangling_face_set for face_id in r)]
+                Logger.log("i", f"Kept {len(regions)} regions after dangling-vertex filter")
 
             # If clicked position provided, find which region was clicked
             target_region_id = None
@@ -1624,14 +2151,50 @@ class MySupportImprover(Tool):
             min_faces = 10
             created_count = 0
 
+            # Dangling regions should have mostly upward neighbors (few lower neighbors).
+            region_lower_fraction_threshold = 0.35
+            convexity_threshold = 0.6
             for region_id, region_faces in enumerate(regions):
                 # If we have a target region, skip all others
                 if target_region_id is not None and region_id != target_region_id:
                     continue
+                region_faces_for_stats = region_faces
+                if dangling_face_set is not None:
+                    region_faces_for_stats = [face_id for face_id in region_faces if face_id in dangling_face_set]
+                    if len(region_faces_for_stats) == 0:
+                        continue
 
-                if len(region_faces) >= min_faces:
+                # Filter out regions that are mostly sloping downward (not dangling tips)
+                if region_faces_for_stats:
+                    avg_lower_fraction = float(face_lower_fraction[region_faces_for_stats].mean())
+                    if avg_lower_fraction > region_lower_fraction_threshold:
+                        Logger.log("d", f"Skipping region {region_id + 1}: avg lower fraction {avg_lower_fraction:.2f}")
+                        continue
+
+                # Convexity filter: dangling parts should curve outward (stalactite-like).
+                convex_total = int(convex_total_counts[region_faces_for_stats].sum())
+                if convex_total > 0:
+                    convex_score = float(convex_pos_counts[region_faces_for_stats].sum()) / convex_total
+                    if convex_score < convexity_threshold:
+                        Logger.log("d", f"Skipping region {region_id + 1}: convex score {convex_score:.2f}")
+                        continue
+
+                region_faces_for_bounds = region_faces
+                if dangling_face_set is not None:
+                    region_faces_for_bounds = region_faces_for_stats
+                elif len(filtered_set) > 0:
+                    filtered_region_faces = [face_id for face_id in region_faces if face_id in filtered_set]
+                    if len(filtered_region_faces) == 0:
+                        continue
+                    # For tiny regions, keep raw bounds to avoid offset from single-face filtering.
+                    if len(filtered_region_faces) == 1 and len(region_faces) <= 2:
+                        region_faces_for_bounds = region_faces
+                    else:
+                        region_faces_for_bounds = filtered_region_faces
+
+                if len(region_faces_for_bounds) >= min_faces:
                     # Calculate region center and bounds in LOCAL space
-                    region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces)
+                    region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces_for_bounds)
                     min_bounds, max_bounds = region_bounds
 
                     # Calculate region dimensions in local space
@@ -1648,8 +2211,12 @@ class MySupportImprover(Tool):
                     padded_size_y = max(1.0, padded_size_y)
                     padded_size_z = max(1.0, padded_size_z)
 
-                    # Transform region center to WORLD space (like manual click positions)
-                    center_local_vec = Vector(region_center_local[0], region_center_local[1], region_center_local[2])
+                    # Position volume so its TOP aligns with the region's highest point
+                    position_local_x = (min_bounds[0] + max_bounds[0]) / 2.0
+                    position_local_y = max_bounds[1] - (padded_size_y / 2.0)
+                    position_local_z = (min_bounds[2] + max_bounds[2]) / 2.0
+
+                    center_local_vec = Vector(position_local_x, position_local_y, position_local_z)
                     center_world = center_local_vec.preMultiply(world_transform)
 
                     # Create a support blocker sized to fit the region
@@ -1672,7 +2239,7 @@ class MySupportImprover(Tool):
         vertex_map = {}
         unique_vertices = []
         indices = []
-        tolerance = 1e-6
+        tolerance = 1e-4
 
         for i in range(0, len(vertices), 3):
             triangle_indices = []
@@ -2029,11 +2596,11 @@ class MySupportImprover(Tool):
 
             # BFS to find connected component
             region = []
-            queue = [start_face]
+            queue = deque([start_face])
             visited.add(start_face)
 
             while queue:
-                current_face = queue.pop(0)
+                current_face = queue.popleft()
                 region.append(current_face)
 
                 if current_face in adjacency:
@@ -2577,6 +3144,13 @@ class MySupportImprover(Tool):
             return
 
         Logger.log("i", f"Detecting overhangs on: {selected_node.getName()}")
+        Logger.log(
+            "i",
+            "Manual detect settings: threshold=%.1f, sharp_features=%s, dangling_vertices=%s (angle-only)",
+            float(self._overhang_threshold),
+            str(self._detect_sharp_features),
+            str(self._detect_dangling_vertices),
+        )
 
         # Get mesh data
         mesh_data = selected_node.getMeshData()
