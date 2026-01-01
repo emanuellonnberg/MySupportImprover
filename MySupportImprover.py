@@ -3,7 +3,7 @@ import os
 import sys
 import json
 from PyQt6.QtCore import Qt, QTimer, pyqtProperty
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QProgressDialog
 from UM.Resources import Resources
 from UM.Logger import Logger
 from UM.Application import Application
@@ -122,6 +122,7 @@ class MySupportImprover(Tool):
         self._detected_overhangs = []  # List of detected overhang regions
         self._overhang_adjacency = {}  # Face adjacency graph
         self._overhang_angles = None  # Cached overhang angles per face
+        self._mesh_cache = {}  # Cached mesh data per node
 
         # Custom support mesh settings (Phase 4)
         self._column_radius = 2.0  # mm - radius of tip support columns
@@ -180,6 +181,7 @@ class MySupportImprover(Tool):
         Selection.selectionChanged.connect(self._onSelectionChanged)
         self._had_selection = False
         self._skip_press = False
+        self._progress_dialog = None
 
         self._had_selection_timer = QTimer()
         self._had_selection_timer.setInterval(0)
@@ -1610,6 +1612,169 @@ class MySupportImprover(Tool):
         with open(json_path, 'w') as f:
             json.dump(payload, f, indent=2)
 
+    def _collectCuttingMeshVolumes(self, model_node: CuraSceneNode) -> List[Dict[str, object]]:
+        """Collect cutting mesh volumes attached to the selected model."""
+        def collect_nodes(root):
+            nodes = [root]
+            if hasattr(root, "getChildren"):
+                for child in root.getChildren():
+                    nodes.extend(collect_nodes(child))
+            return nodes
+
+        def is_descendant(node, ancestor):
+            current = node
+            while current is not None:
+                if current == ancestor:
+                    return True
+                if hasattr(current, "getParent"):
+                    current = current.getParent()
+                else:
+                    break
+            return False
+
+        volumes = []
+        scene_root = self._controller.getScene().getRoot()
+        for node in collect_nodes(scene_root):
+            if node == model_node:
+                continue
+            try:
+                if self.getMeshType(node) != "cutting_mesh":
+                    continue
+            except Exception:
+                continue
+
+            if not is_descendant(node, model_node):
+                continue
+
+            mesh_data = node.getMeshData()
+            if not mesh_data:
+                continue
+
+            transformed = mesh_data.getTransformed(node.getWorldTransformation())
+            vertices = transformed.getVertices()
+            if vertices is None or len(vertices) == 0:
+                continue
+
+            min_bounds = vertices.min(axis=0)
+            max_bounds = vertices.max(axis=0)
+            volumes.append({
+                "node": node,
+                "name": node.getName(),
+                "min": min_bounds,
+                "max": max_bounds,
+            })
+
+        return volumes
+
+    def _logDanglingProbeVolumes(self, model_node: CuraSceneNode,
+                                 vertices_world: numpy.ndarray,
+                                 indices: numpy.ndarray,
+                                 face_centers_world: numpy.ndarray,
+                                 dangling_seed_mask: numpy.ndarray,
+                                 dangling_candidate_mask: numpy.ndarray,
+                                 overhang_mask: numpy.ndarray,
+                                 vertex_adjacency: List[Set[int]],
+                                 min_face_y: float,
+                                 min_drop: float) -> None:
+        """Log dangling detection stats for existing volumes."""
+        volumes = self._collectCuttingMeshVolumes(model_node)
+        if not volumes:
+            return
+
+        seed_ids = numpy.where(dangling_seed_mask)[0]
+        seed_positions = vertices_world[seed_ids] if len(seed_ids) > 0 else None
+
+        for volume in volumes:
+            min_bounds = volume["min"]
+            max_bounds = volume["max"]
+            volume_name = volume["name"]
+
+            seed_count = 0
+            seed_min_y = None
+            seed_max_y = None
+            if seed_positions is not None:
+                seed_inside = (
+                    (seed_positions[:, 0] >= min_bounds[0]) & (seed_positions[:, 0] <= max_bounds[0]) &
+                    (seed_positions[:, 1] >= min_bounds[1]) & (seed_positions[:, 1] <= max_bounds[1]) &
+                    (seed_positions[:, 2] >= min_bounds[2]) & (seed_positions[:, 2] <= max_bounds[2])
+                )
+                seed_count = int(numpy.count_nonzero(seed_inside))
+                if seed_count > 0:
+                    seed_y = seed_positions[seed_inside][:, 1]
+                    seed_min_y = float(seed_y.min())
+                    seed_max_y = float(seed_y.max())
+
+            face_inside = (
+                (face_centers_world[:, 0] >= min_bounds[0]) & (face_centers_world[:, 0] <= max_bounds[0]) &
+                (face_centers_world[:, 1] >= min_bounds[1]) & (face_centers_world[:, 1] <= max_bounds[1]) &
+                (face_centers_world[:, 2] >= min_bounds[2]) & (face_centers_world[:, 2] <= max_bounds[2])
+            )
+            candidate_count = int(numpy.count_nonzero(face_inside & dangling_candidate_mask))
+            overhang_count = int(numpy.count_nonzero(face_inside & overhang_mask))
+            candidate_face_ids = numpy.where(face_inside & dangling_candidate_mask)[0]
+
+            vertex_count = 0
+            eligible_count = 0
+            no_lower_count = 0
+            min_delta_min = None
+            min_delta_max = None
+            if len(candidate_face_ids) > 0:
+                vertex_ids = numpy.unique(indices[candidate_face_ids].reshape(-1))
+                vertex_count = int(len(vertex_ids))
+                vertex_y = vertices_world[:, 1]
+                for vertex_id in vertex_ids:
+                    v_id = int(vertex_id)
+                    v_y = float(vertex_y[v_id])
+                    if v_y <= min_face_y:
+                        continue
+                    eligible_count += 1
+                    min_delta = None
+                    for neighbor in vertex_adjacency[v_id]:
+                        delta = float(vertex_y[int(neighbor)] - v_y)
+                        if min_delta is None or delta < min_delta:
+                            min_delta = delta
+                    if min_delta is None:
+                        min_delta = 0.0
+                    if min_delta >= -min_drop:
+                        no_lower_count += 1
+                    if min_delta_min is None or min_delta < min_delta_min:
+                        min_delta_min = min_delta
+                    if min_delta_max is None or min_delta > min_delta_max:
+                        min_delta_max = min_delta
+
+            if seed_count > 0:
+                Logger.log(
+                    "d",
+                    "Probe volume '%s': seeds=%d (y=%.3f..%.3f) candidate_faces=%d overhang_faces=%d",
+                    volume_name,
+                    seed_count,
+                    float(seed_min_y),
+                    float(seed_max_y),
+                    candidate_count,
+                    overhang_count,
+                )
+            else:
+                Logger.log(
+                    "d",
+                    "Probe volume '%s': seeds=0 candidate_faces=%d overhang_faces=%d",
+                    volume_name,
+                    candidate_count,
+                    overhang_count,
+                )
+
+            if candidate_count > 0:
+                Logger.log(
+                    "d",
+                    "Probe volume '%s' detail: candidate_vertices=%d eligible=%d no_lower=%d min_delta=%.5f..%.5f min_face_y=%.3f",
+                    volume_name,
+                    vertex_count,
+                    eligible_count,
+                    no_lower_count,
+                    float(min_delta_min) if min_delta_min is not None else 0.0,
+                    float(min_delta_max) if min_delta_max is not None else 0.0,
+                    float(min_face_y),
+                )
+
     def _findClosestFace(self, vertices, indices, point):
         """Find the closest face to a given point"""
         min_distance = float('inf')
@@ -1678,29 +1843,22 @@ class MySupportImprover(Tool):
             Logger.log("e", "No mesh data available for overhang detection")
             return
 
+        self._startProgress("MySupportImprover", "Preparing mesh...", 0, 100)
         try:
             Logger.log("i", "=== SINGLE REGION DETECTION ===")
 
+            cache = self._getCachedMeshData(node)
+            if not cache:
+                Logger.log("e", "No mesh data available for overhang detection")
+                return
+
             # Get mesh data in LOCAL space
-            mesh_data = node.getMeshData()
-            vertices_local = mesh_data.getVertices()
+            vertices_local = cache["vertices_local"]
+            indices = cache["indices"]
             world_transform = node.getWorldTransformation()
 
-            # Handle non-indexed meshes or indexed meshes without shared vertices
-            reindexed = False
-            if not mesh_data.hasIndices():
-                Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
-                vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
-                reindexed = True
-            else:
-                indices = mesh_data.getIndices()
-                if self._meshNeedsIndexRebuild(vertices_local, indices):
-                    Logger.log("i", "Indexed mesh has no shared vertices; rebuilding indices for adjacency...")
-                    expanded_vertices = numpy.array(indices, dtype=numpy.int32).reshape(-1)
-                    vertices_local, indices = self._rebuildIndexedMesh(vertices_local[expanded_vertices])
-                    reindexed = True
-
             Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
+            self._updateProgress("Finding closest face...", 20)
 
             # Convert clicked position to local space
             inverse_transform = world_transform.getInverse()
@@ -1710,10 +1868,11 @@ class MySupportImprover(Tool):
             # Find closest face to click
             closest_face_id, closest_distance = self._findClosestFace(vertices_local, indices, picked_point)
             Logger.log("i", f"Closest face to click: {closest_face_id}, distance: {closest_distance:.2f}mm")
+            self._updateProgress("Searching for overhang face...", 35)
 
             # Build adjacency graph for ALL faces (needed for BFS)
             Logger.log("i", "Building face adjacency graph...")
-            adjacency = self._buildAdjacencyGraph(indices)
+            adjacency = self._getCachedFaceAdjacency(cache)
 
             # Check if this face is an overhang
             start_face_id = closest_face_id
@@ -1734,6 +1893,7 @@ class MySupportImprover(Tool):
                 Logger.log("i", "Clicked face is an overhang")
 
             Logger.log("i", "Finding connected overhang region (including near-threshold faces)...")
+            self._updateProgress("Building overhang region...", 55)
 
             # Do BFS from start face to find overhang faces AND near-threshold faces
             # This captures the entire dangling feature, not just the strict overhangs
@@ -1743,6 +1903,7 @@ class MySupportImprover(Tool):
             )
 
             Logger.log("i", f"Found connected overhang region with {len(region_faces)} faces")
+            self._updateProgress(f"Region found: {len(region_faces)} faces", 70)
 
             if len(region_faces) < 10:
                 Logger.log("w", f"Region too small ({len(region_faces)} faces) - no blocker created")
@@ -1771,15 +1932,19 @@ class MySupportImprover(Tool):
             position_world = position_local_vec.preMultiply(world_transform)
 
             # Create blocker
+            self._updateProgress("Creating support blocker...", 90)
             self._createModifierVolumeWithSize(node, position_world, padded_size_x, padded_size_y, padded_size_z)
 
             Logger.log("i", f"Created support blocker for region ({len(region_faces)} faces) at world pos: [{position_world.x:.2f}, {position_world.y:.2f}, {position_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
             Logger.log("d", f"Region bounds: min_y={min_bounds[1]:.2f}, max_y={max_bounds[1]:.2f}, volume top at y={max_bounds[1]:.2f}")
+            self._updateProgress("Support blocker created.", 100)
 
         except Exception as e:
             Logger.log("e", f"Failed to detect single region: {e}")
             import traceback
             Logger.log("e", traceback.format_exc())
+        finally:
+            self._closeProgress()
 
     def _transformVertices(self, vertices: numpy.ndarray, transform) -> numpy.ndarray:
         """Apply a world transform to vertex positions."""
@@ -1800,6 +1965,48 @@ class MySupportImprover(Tool):
         normals_world = normals @ normal_matrix.T
         lengths = numpy.linalg.norm(normals_world, axis=1, keepdims=True)
         return normals_world / numpy.maximum(lengths, 1e-10)
+
+    def _startProgress(self, title: str, message: str, minimum: int = 0, maximum: int = 100):
+        app = QApplication.instance()
+        if app is None:
+            return None
+
+        dialog = self._progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(message, None, minimum, maximum)
+            dialog.setWindowTitle(title)
+            dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setValue(minimum)
+            self._progress_dialog = dialog
+        else:
+            dialog.setLabelText(message)
+            dialog.setRange(minimum, maximum)
+            dialog.setValue(minimum)
+
+        dialog.show()
+        app.processEvents()
+        return dialog
+
+    def _updateProgress(self, message: str, value: Optional[int] = None) -> None:
+        dialog = self._progress_dialog
+        if dialog is None:
+            return
+        if message:
+            dialog.setLabelText(message)
+        if value is not None:
+            dialog.setValue(int(value))
+        QApplication.processEvents()
+
+    def _closeProgress(self) -> None:
+        dialog = self._progress_dialog
+        if dialog is None:
+            return
+        dialog.close()
+        self._progress_dialog = None
 
     def _computeFaceNormalsFromVertexNormals(self, vertex_normals: numpy.ndarray,
                                              indices: numpy.ndarray) -> numpy.ndarray:
@@ -1951,6 +2158,256 @@ class MySupportImprover(Tool):
         face_mask = face_has_dangling & face_mask
         return numpy.where(face_mask)[0].astype(numpy.int32)
 
+    def _findDanglingVertexRegions(self, vertices_world: numpy.ndarray, indices: numpy.ndarray,
+                                   min_drop: float, min_face_y: float) -> Tuple[List[Set[int]], numpy.ndarray]:
+        """Find connected vertex regions where no vertex has a lower neighbor."""
+        vertex_count = len(vertices_world)
+        if vertex_count == 0 or len(indices) == 0:
+            return [], numpy.zeros(vertex_count, dtype=bool)
+
+        adjacency = self._buildVertexAdjacency(indices, vertex_count)
+        vertex_y = vertices_world[:, 1]
+        eligible = vertex_y > min_face_y
+
+        has_lower = numpy.zeros(vertex_count, dtype=bool)
+        for vertex_id in range(vertex_count):
+            if not eligible[vertex_id]:
+                continue
+            v_y = vertex_y[vertex_id]
+            for neighbor in adjacency[vertex_id]:
+                if vertex_y[neighbor] < (v_y - min_drop):
+                    has_lower[vertex_id] = True
+                    break
+
+        dangling_mask = eligible & ~has_lower
+        seeds = numpy.where(dangling_mask)[0]
+        Logger.log(
+            "d",
+            "Dangling vertex stats: eligible=%d dangling=%d min_drop=%.3f",
+            int(numpy.count_nonzero(eligible)),
+            int(len(seeds)),
+            float(min_drop),
+        )
+        if len(seeds) > 0:
+            max_debug = 30
+            sample = seeds[:max_debug]
+            for idx, vertex_id in enumerate(sample, start=1):
+                neighbors = adjacency[int(vertex_id)]
+                v = vertices_world[int(vertex_id)]
+                v_y = vertex_y[int(vertex_id)]
+                min_delta = None
+                for neighbor in neighbors:
+                    delta = float(vertex_y[neighbor] - v_y)
+                    if min_delta is None or delta < min_delta:
+                        min_delta = delta
+                Logger.log(
+                    "d",
+                    "Dangling seed %d: id=%d pos=[%.3f, %.3f, %.3f] neighbors=%d min_neighbor_delta=%.4f",
+                    idx,
+                    int(vertex_id),
+                    float(v[0]),
+                    float(v[1]),
+                    float(v[2]),
+                    int(len(neighbors)),
+                    float(min_delta) if min_delta is not None else 0.0,
+                )
+
+        assigned = numpy.zeros(vertex_count, dtype=bool)
+        regions = []
+
+        for seed in seeds:
+            if assigned[seed]:
+                continue
+            region = set([seed])
+            assigned[seed] = True
+            queue = deque([seed])
+
+            while queue:
+                current = queue.popleft()
+                for neighbor in adjacency[current]:
+                    if assigned[neighbor] or not dangling_mask[neighbor]:
+                        continue
+                    assigned[neighbor] = True
+                    region.add(neighbor)
+                    queue.append(neighbor)
+
+            if region:
+                regions.append(region)
+
+        return regions, dangling_mask
+
+    def _mergeSmallDanglingRegions(self, regions: List[Set[int]],
+                                   adjacency: List[Set[int]],
+                                   min_vertices: int) -> List[Set[int]]:
+        """Merge small dangling regions into a single neighboring region."""
+        if not regions:
+            return regions
+
+        vertex_count = len(adjacency)
+        region_id = [-1] * vertex_count
+        for idx, region in enumerate(regions):
+            for vertex_id in region:
+                region_id[int(vertex_id)] = idx
+
+        region_sizes = [len(region) for region in regions]
+        small = [size < min_vertices for size in region_sizes]
+        parent = list(range(len(regions)))
+
+        def find_root(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(a, b):
+            ra = find_root(a)
+            rb = find_root(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        region_neighbors = [set() for _ in range(len(regions))]
+        for vertex_id, neighbors in enumerate(adjacency):
+            region_a = region_id[vertex_id]
+            if region_a < 0:
+                continue
+            for neighbor in neighbors:
+                region_b = region_id[neighbor]
+                if region_b < 0 or region_a == region_b:
+                    continue
+                region_neighbors[region_a].add(region_b)
+
+        for idx, is_small in enumerate(small):
+            if not is_small:
+                continue
+            neighbors = region_neighbors[idx]
+            if not neighbors:
+                continue
+            best_neighbor = max(neighbors, key=lambda n: region_sizes[n])
+            union(idx, best_neighbor)
+
+        merged = {}
+        for idx, region in enumerate(regions):
+            root = find_root(idx)
+            merged.setdefault(root, set()).update(region)
+
+        return list(merged.values())
+
+    def _expandDanglingFaceRegion(self, seed_faces: numpy.ndarray,
+                                  adjacency: Dict[int, List[int]],
+                                  candidate_mask: numpy.ndarray,
+                                  max_faces: int,
+                                  max_depth: int) -> List[int]:
+        """Expand seed faces into a local candidate-face region."""
+        if seed_faces is None or len(seed_faces) == 0:
+            return []
+
+        visited = set(int(face_id) for face_id in seed_faces)
+        queue = deque((int(face_id), 0) for face_id in seed_faces)
+
+        while queue:
+            face_id, depth = queue.popleft()
+            if depth >= max_depth:
+                continue
+            for neighbor in adjacency.get(face_id, []):
+                if neighbor in visited:
+                    continue
+                if not candidate_mask[neighbor]:
+                    continue
+                visited.add(neighbor)
+                if len(visited) >= max_faces:
+                    return list(visited)
+                queue.append((neighbor, depth + 1))
+
+        return list(visited)
+
+    def _mergeOverlappingFaceRegions(self, regions: List[List[int]]) -> List[List[int]]:
+        """Merge face regions that overlap."""
+        if not regions:
+            return []
+
+        region_sets = [set(region) for region in regions]
+        parent = list(range(len(region_sets)))
+
+        def find_root(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(a, b):
+            ra = find_root(a)
+            rb = find_root(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i in range(len(region_sets)):
+            for j in range(i + 1, len(region_sets)):
+                if region_sets[i] & region_sets[j]:
+                    union(i, j)
+
+        merged = {}
+        for idx, region in enumerate(region_sets):
+            root = find_root(idx)
+            merged.setdefault(root, set()).update(region)
+
+        return [list(region) for region in merged.values()]
+
+    def _danglingVertexRegionsToFaceRegions(self, vertex_regions: List[Set[int]],
+                                            indices: numpy.ndarray,
+                                            face_mask: Optional[numpy.ndarray] = None
+                                            ) -> List[List[int]]:
+        """Convert dangling vertex regions to face regions, with a loose fallback."""
+        if not vertex_regions or len(indices) == 0:
+            return []
+
+        vertex_count = int(indices.max()) + 1 if len(indices) else 0
+        region_id = [-1] * vertex_count
+        for idx, region in enumerate(vertex_regions):
+            for vertex_id in region:
+                region_id[int(vertex_id)] = idx
+
+        face_regions: List[List[int]] = [[] for _ in range(len(vertex_regions))]
+        loose_regions: List[List[int]] = [[] for _ in range(len(vertex_regions))]
+        for face_id, face in enumerate(indices):
+            if face_mask is not None and not bool(face_mask[face_id]):
+                continue
+            v0, v1, v2 = int(face[0]), int(face[1]), int(face[2])
+            rid = region_id[v0]
+            if rid >= 0 and rid == region_id[v1] == region_id[v2]:
+                face_regions[rid].append(face_id)
+                continue
+            region_ids = [region_id[v0], region_id[v1], region_id[v2]]
+            region_ids = [rid for rid in region_ids if rid >= 0]
+            if not region_ids:
+                continue
+            pick = max(set(region_ids), key=region_ids.count)
+            loose_regions[pick].append(face_id)
+
+        if face_regions and sum(len(region) for region in face_regions) == 0:
+            Logger.log(
+                "d",
+                "Dangling face conversion produced zero strict faces (regions=%d, vertices min=%d max=%d).",
+                len(vertex_regions),
+                min(len(region) for region in vertex_regions),
+                max(len(region) for region in vertex_regions),
+            )
+
+        combined = []
+        for idx, region_faces in enumerate(face_regions):
+            if region_faces:
+                combined.append(region_faces)
+                continue
+            if loose_regions[idx]:
+                Logger.log(
+                    "d",
+                    "Dangling region %d: strict faces=0 loose faces=%d (face_mask=%s)",
+                    idx + 1,
+                    len(loose_regions[idx]),
+                    "on" if face_mask is not None else "off",
+                )
+                combined.append(loose_regions[idx])
+        return combined
+
     def _autoDetectOverhangs(self, node: CuraSceneNode, picked_position: Vector = None):
         """Automatically detect overhangs and create support blockers
 
@@ -1962,6 +2419,7 @@ class MySupportImprover(Tool):
             Logger.log("e", "No mesh data available for overhang detection")
             return
 
+        self._startProgress("MySupportImprover", "Preparing mesh...", 0, 100)
         try:
             Logger.log("i", "=== AUTO OVERHANG DETECTION ===")
             Logger.log(
@@ -1972,61 +2430,40 @@ class MySupportImprover(Tool):
                 str(self._detect_dangling_vertices),
             )
 
+            cache = self._getCachedMeshData(node)
+            if not cache:
+                Logger.log("e", "No mesh data available for overhang detection")
+                return
+
             # Get mesh data in LOCAL space (bounds/sizes should be in local coordinates)
-            mesh_data = node.getMeshData()
-            vertices_local = mesh_data.getVertices()
+            vertices_local = cache["vertices_local"]
+            indices = cache["indices"]
             world_transform = node.getWorldTransformation()
 
-            # Handle non-indexed meshes or indexed meshes without shared vertices
-            reindexed = False
-            if not mesh_data.hasIndices():
-                Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
-                vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
-                reindexed = True
-            else:
-                indices = mesh_data.getIndices()
-                if self._meshNeedsIndexRebuild(vertices_local, indices):
-                    Logger.log("i", "Indexed mesh has no shared vertices; rebuilding indices for adjacency...")
-                    expanded_vertices = numpy.array(indices, dtype=numpy.int32).reshape(-1)
-                    vertices_local, indices = self._rebuildIndexedMesh(vertices_local[expanded_vertices])
-                    reindexed = True
-
             Logger.log("i", f"Mesh: {len(vertices_local)} vertices, {len(indices)} faces")
+            if self._detect_dangling_vertices:
+                self._updateProgress("Detecting dangling vertices...", 15)
+            else:
+                self._updateProgress("Detecting overhang faces...", 15)
 
             vertices_world = self._transformVertices(vertices_local, world_transform)
 
             # Detect overhang faces using world-space normals for correct orientation
-            face_normals_local = None
-            if mesh_data.hasNormals() and not reindexed:
-                normals = mesh_data.getNormals()
-                if normals is not None and len(normals) > 0:
-                    normals = numpy.array(normals, dtype=numpy.float32)
-                    if mesh_data.hasIndices():
-                        if len(normals) == len(vertices_local):
-                            face_normals_local = self._computeFaceNormalsFromVertexNormals(normals, indices)
-                        elif len(normals) == len(indices):
-                            face_normals_local = normals
-                    else:
-                        if len(normals) == len(vertices_local):
-                            face_normals_local = normals.reshape(-1, 3, 3).mean(axis=1)
-                            lengths = numpy.linalg.norm(face_normals_local, axis=1, keepdims=True)
-                            face_normals_local = face_normals_local / numpy.maximum(lengths, 1e-10)
-                        elif len(normals) == len(indices):
-                            face_normals_local = normals
+            face_normals_local = cache["face_normals_from_mesh"]
+            if face_normals_local is not None:
+                Logger.log("d", "Using mesh normals for overhang detection")
 
-                    if face_normals_local is not None:
-                        Logger.log("d", "Using mesh normals for overhang detection")
-
-            face_normals_geom_local = self._compute_face_normals(vertices_local, indices)
+            face_normals_geom_local = cache["face_normals_geom"]
             if face_normals_local is None:
                 face_normals_local = face_normals_geom_local
 
             face_normals_world = self._transformNormals(face_normals_local, world_transform)
-            face_normals_geom_world = self._compute_face_normals(vertices_world, indices)
+            face_normals_geom_world = self._transformNormals(face_normals_geom_local, world_transform)
             raw_overhang_ids = self._detectOverhangFacesFromNormals(face_normals_world, self._overhang_threshold)
 
-            adjacency_all = self._buildAdjacencyGraph(indices)
-            face_centers_world = self._computeFaceCenters(vertices_world, indices)
+            adjacency_all = self._getCachedFaceAdjacency(cache)
+            face_centers_local = cache["face_centers_local"]
+            face_centers_world = self._transformVertices(face_centers_local, world_transform)
             mesh_min_y = float(vertices_world[:, 1].min()) if len(vertices_world) else 0.0
             min_face_y = mesh_min_y + 0.2
             if mesh_min_y > 0.5:
@@ -2038,7 +2475,12 @@ class MySupportImprover(Tool):
                 overhang_mask[raw_overhang_ids] = True
             build_direction = numpy.array([0.0, -1.0, 0.0])
             normals_for_dangling = face_normals_geom_world if self._detect_dangling_vertices else face_normals_world
+            face_down_dot = numpy.dot(face_normals_world, build_direction)
+            face_down_dot = numpy.clip(face_down_dot, -1.0, 1.0)
+            face_down_angles = numpy.degrees(numpy.arccos(face_down_dot))
             downward_mask = numpy.dot(normals_for_dangling, build_direction) > 0.0
+            dangling_min_angle = 0.0
+            dangling_candidate_mask = downward_mask & overhang_mask
             downward_face_ids = numpy.where(downward_mask)[0]
 
             face_lower_fraction = numpy.zeros(face_count, dtype=numpy.float32)
@@ -2074,89 +2516,149 @@ class MySupportImprover(Tool):
                 face_lower_fraction[face_id] = lower_count / len(neighbors)
             Logger.log("i", f"Found {len(raw_overhang_ids)} overhang faces")
 
-            dangling_face_set = None
-            dangling_face_ids = numpy.array([], dtype=numpy.int32)
+            min_faces_overhang = 10
+            min_faces_dangling = 6
+            min_faces = min_faces_overhang
+            regions = []
+            dangling_vertex_regions_active = False
+
             if self._detect_dangling_vertices:
-                dangling_vertex_mask = self._detectDanglingVertices(
-                    vertices_world, indices, downward_mask, min_drop=0.05
+                self._updateProgress("Detecting dangling regions...", 35)
+                dangling_min_drop = 0.0
+                dangling_regions, dangling_seed_mask = self._findDanglingVertexRegions(
+                    vertices_world, indices, min_drop=dangling_min_drop, min_face_y=min_face_y
                 )
-                dangling_face_ids = self._detectDanglingFacesFromVertices(
-                    indices, dangling_vertex_mask, downward_mask
+                vertex_adjacency = self._getCachedVertexAdjacency(cache, len(vertices_world))
+                self._logDanglingProbeVolumes(
+                    node,
+                    vertices_world,
+                    indices,
+                    face_centers_world,
+                    dangling_seed_mask,
+                    dangling_candidate_mask,
+                    overhang_mask,
+                    vertex_adjacency,
+                    min_face_y,
+                    dangling_min_drop,
                 )
-                Logger.log("i", f"Dangling vertex detector found {int(dangling_vertex_mask.sum())} vertices "
-                                f"and {len(dangling_face_ids)} faces")
-                if len(dangling_face_ids) > 0:
-                    dangling_face_ids = dangling_face_ids[face_centers_world[dangling_face_ids][:, 1] > min_face_y]
-                    Logger.log("i", f"Dangling faces after build-plate filter: {len(dangling_face_ids)}")
-                    if len(dangling_face_ids) == 0:
-                        Logger.log("i", "Dangling faces filtered out near build plate")
-                if len(dangling_face_ids) > 0:
-                    dangling_face_set = set(int(face_id) for face_id in dangling_face_ids)
+                if len(dangling_regions) > 0:
+                    dangling_regions = self._mergeSmallDanglingRegions(
+                        dangling_regions, vertex_adjacency, min_vertices=max(3, min_faces_dangling * 3)
+                    )
+                    expanded_regions = []
+                    vertex_count = len(vertices_world)
+                    for idx, region in enumerate(dangling_regions, start=1):
+                        region_mask = numpy.zeros(vertex_count, dtype=bool)
+                        region_mask[list(region)] = True
+                        seed_faces = numpy.where(
+                            dangling_candidate_mask & numpy.any(region_mask[indices], axis=1)
+                        )[0]
+                        if len(seed_faces) == 0:
+                            Logger.log("d", "Dangling region %d: no seed faces in candidate mask", idx)
+                            continue
+                        expanded = self._expandDanglingFaceRegion(
+                            seed_faces,
+                            adjacency_all,
+                            dangling_candidate_mask,
+                            max_faces=180,
+                            max_depth=4,
+                        )
+                        Logger.log(
+                            "d",
+                            "Dangling region %d: seeds=%d seed_faces=%d expanded_faces=%d",
+                            idx,
+                            len(region),
+                            len(seed_faces),
+                            len(expanded),
+                        )
+                        expanded_regions.append(expanded)
+
+                    regions = self._mergeOverlappingFaceRegions(expanded_regions)
+                    if regions:
+                        dangling_vertex_regions_active = True
+                        min_faces = min_faces_dangling
+                        region_sizes = [len(region) for region in regions]
+                        Logger.log(
+                            "i",
+                            "Found %d connected dangling regions (candidate faces=%d, min_angle=%.1f)",
+                            len(regions),
+                            int(dangling_candidate_mask.sum()),
+                            dangling_min_angle,
+                        )
+                        Logger.log(
+                            "d",
+                            "Dangling region sizes: min=%d max=%d avg=%.1f",
+                            int(min(region_sizes)),
+                            int(max(region_sizes)),
+                            float(sum(region_sizes)) / len(region_sizes),
+                        )
+                        self._updateProgress(f"Found {len(regions)} dangling regions", 50)
+                    else:
+                        Logger.log("i", "Dangling vertex regions produced no faces - stopping (no fallback)")
+                        return
                 else:
-                    Logger.log("i", "Dangling vertex detector found no faces - skipping vertex filter")
+                    Logger.log("i", "Dangling vertex detector found no regions - stopping (no fallback)")
+                    return
 
             region_source_ids = raw_overhang_ids
             region_source_label = "overhang"
             use_neighbor_filter = True
-            if self._detect_dangling_vertices:
-                if len(dangling_face_ids) > 0:
-                    region_source_ids = downward_face_ids
-                    region_source_label = "downward"
-                    use_neighbor_filter = False
-                    Logger.log("i", "Using downward faces for regions (dangling-vertex mode)")
-                else:
-                    Logger.log("i", "No dangling faces found - falling back to overhang regions")
+            filtered_set = set()
+            if not dangling_vertex_regions_active:
+                if self._detect_dangling_vertices:
+                    Logger.log("i", "Dangling vertex mode inactive - using overhang regions")
 
-            filtered_overhang_ids = region_source_ids
-            if use_neighbor_filter and len(region_source_ids) > 0:
-                filtered_overhang_ids = self._filterOverhangFacesByNeighborHeight(
-                    region_source_ids,
-                    adjacency_all,
-                    face_centers_world,
-                    min_delta_y=0.05,
-                    max_lower_fraction=0.5,
-                    min_face_y=min_face_y,
-                    obstruction_vertices=vertices_world,
-                    obstruction_indices=indices,
-                    min_clearance=0.0
-                )
-                if len(filtered_overhang_ids) != len(region_source_ids):
-                    Logger.log("i", f"Filtered to {len(filtered_overhang_ids)} faces after neighbor-height check")
+            if not dangling_vertex_regions_active:
+                self._updateProgress(f"Found {len(raw_overhang_ids)} overhang faces", 35)
+                filtered_overhang_ids = region_source_ids
+                if use_neighbor_filter and len(region_source_ids) > 0:
+                    filtered_overhang_ids = self._filterOverhangFacesByNeighborHeight(
+                        region_source_ids,
+                        adjacency_all,
+                        face_centers_world,
+                        min_delta_y=0.05,
+                        max_lower_fraction=0.5,
+                        min_face_y=min_face_y,
+                        obstruction_vertices=vertices_world,
+                        obstruction_indices=indices,
+                        min_clearance=0.0
+                    )
+                    if len(filtered_overhang_ids) != len(region_source_ids):
+                        Logger.log("i", f"Filtered to {len(filtered_overhang_ids)} faces after neighbor-height check")
 
-            regions = []
-            filtered_set = set(int(face_id) for face_id in filtered_overhang_ids)
-            if len(region_source_ids) == 0:
-                if self._detect_sharp_features:
-                    Logger.log("i", "No detection faces found - falling back to sharp feature detection")
-                else:
-                    Logger.log("i", "No overhangs detected")
-                    return
-            else:
-                # Find connected regions using selected detection faces, then keep regions with filtered faces
-                regions = self._findConnectedRegions(vertices_local, indices, region_source_ids)
-                Logger.log("i", f"Found {len(regions)} connected {region_source_label} regions")
-
-                if use_neighbor_filter:
-                    if len(filtered_set) > 0:
-                        regions = [r for r in regions if any(face_id in filtered_set for face_id in r)]
-                        Logger.log("i", f"Kept {len(regions)} regions after neighbor-height filter")
+                filtered_set = set(int(face_id) for face_id in filtered_overhang_ids)
+                if len(region_source_ids) == 0:
+                    if self._detect_sharp_features:
+                        Logger.log("i", "No detection faces found - falling back to sharp feature detection")
                     else:
-                        Logger.log("i", "All detection faces filtered out by neighbor-height check")
-                        regions = []
+                        Logger.log("i", "No overhangs detected")
+                        return
+                else:
+                    # Find connected regions using selected detection faces, then keep regions with filtered faces
+                    regions = self._findConnectedRegions(vertices_local, indices, region_source_ids)
+                    Logger.log("i", f"Found {len(regions)} connected {region_source_label} regions")
+                    self._updateProgress(f"Found {len(regions)} regions", 50)
+
+                    if use_neighbor_filter:
+                        if len(filtered_set) > 0:
+                            regions = [r for r in regions if any(face_id in filtered_set for face_id in r)]
+                            Logger.log("i", f"Kept {len(regions)} regions after neighbor-height filter")
+                            self._updateProgress(f"Filtered to {len(regions)} regions", 55)
+                        else:
+                            Logger.log("i", "All detection faces filtered out by neighbor-height check")
+                            regions = []
 
             # Apply sharp feature detection if enabled
             if self._detect_sharp_features:
                 Logger.log("i", "Sharp feature detection enabled - analyzing vertex curvature...")
+                self._updateProgress("Analyzing sharp features...", 60)
                 sharp_vertices = self._detectSharpVertices(vertices_world, indices, curvature_threshold=2.0)
                 if len(sharp_vertices) > 0:
                     Logger.log("i", f"Detected {len(sharp_vertices)} sharp vertices - expanding regions...")
                     regions = self._expandRegionsWithSharpFeatures(vertices_world, indices, regions,
                                                                    sharp_vertices, expansion_radius=5.0)
                     Logger.log("i", f"After sharp feature expansion: {len(regions)} total regions")
-
-            if dangling_face_set is not None:
-                regions = [r for r in regions if any(face_id in dangling_face_set for face_id in r)]
-                Logger.log("i", f"Kept {len(regions)} regions after dangling-vertex filter")
+                    self._updateProgress(f"Expanded to {len(regions)} regions", 65)
 
             # If clicked position provided, find which region was clicked
             target_region_id = None
@@ -2168,8 +2670,10 @@ class MySupportImprover(Tool):
                     Logger.log("w", "Click position not in any overhang region - creating blockers for all regions")
 
             # Create support blockers
-            min_faces = 10
             created_count = 0
+            total_regions = len(regions)
+            if total_regions > 0:
+                self._updateProgress(f"Creating blockers for {total_regions} regions...", 75)
 
             # Dangling regions should have mostly upward neighbors (few lower neighbors).
             region_lower_fraction_threshold = 0.35
@@ -2178,34 +2682,40 @@ class MySupportImprover(Tool):
                 Logger.log("d", "Floating mesh detected; relaxing lower-neighbor threshold to %.2f",
                            region_lower_fraction_threshold)
             convexity_threshold = 0.6
+            apply_convexity_filter = not dangling_vertex_regions_active and self._detect_dangling_vertices
+            apply_lower_fraction_filter = not dangling_vertex_regions_active
+            processed_regions = 0
             for region_id, region_faces in enumerate(regions):
+                processed_regions += 1
                 # If we have a target region, skip all others
                 if target_region_id is not None and region_id != target_region_id:
                     continue
                 region_faces_for_stats = region_faces
-                if dangling_face_set is not None:
-                    region_faces_for_stats = [face_id for face_id in region_faces if face_id in dangling_face_set]
-                    if len(region_faces_for_stats) == 0:
-                        continue
 
                 # Filter out regions that are mostly sloping downward (not dangling tips)
-                if region_faces_for_stats:
+                if apply_lower_fraction_filter and region_faces_for_stats:
                     avg_lower_fraction = float(face_lower_fraction[region_faces_for_stats].mean())
                     if avg_lower_fraction > region_lower_fraction_threshold:
                         Logger.log("d", f"Skipping region {region_id + 1}: avg lower fraction {avg_lower_fraction:.2f}")
                         continue
 
                 # Convexity filter: dangling parts should curve outward (stalactite-like).
-                convex_total = int(convex_total_counts[region_faces_for_stats].sum())
-                if convex_total > 0:
-                    convex_score = float(convex_pos_counts[region_faces_for_stats].sum()) / convex_total
-                    if convex_score < convexity_threshold:
-                        Logger.log("d", f"Skipping region {region_id + 1}: convex score {convex_score:.2f}")
-                        continue
+                if apply_convexity_filter:
+                    convex_total = int(convex_total_counts[region_faces_for_stats].sum())
+                    if convex_total > 0:
+                        convex_score = float(convex_pos_counts[region_faces_for_stats].sum()) / convex_total
+                        if convex_score < convexity_threshold:
+                            Logger.log("d", f"Skipping region {region_id + 1}: convex score {convex_score:.2f}")
+                            continue
 
                 region_faces_for_bounds = region_faces
-                if dangling_face_set is not None:
-                    region_faces_for_bounds = region_faces_for_stats
+                region_vertex_mask = None
+                if dangling_vertex_regions_active:
+                    candidate_region_faces = [face_id for face_id in region_faces if dangling_candidate_mask[face_id]]
+                    if not candidate_region_faces:
+                        Logger.log("d", f"Skipping region {region_id + 1}: no downward overhang faces")
+                        continue
+                    region_faces_for_bounds = candidate_region_faces
                 elif len(filtered_set) > 0:
                     filtered_region_faces = [face_id for face_id in region_faces if face_id in filtered_set]
                     if len(filtered_region_faces) == 0:
@@ -2220,14 +2730,50 @@ class MySupportImprover(Tool):
                     # Calculate region center and bounds in LOCAL space
                     region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces_for_bounds)
                     min_bounds, max_bounds = region_bounds
+                    if dangling_vertex_regions_active:
+                        face_center_y = face_centers_local[region_faces_for_bounds][:, 1]
+                        if len(face_center_y) > 0 and len(region_faces_for_bounds) >= max(200, min_faces * 20):
+                            height_cut = float(numpy.percentile(face_center_y, 35))
+                            lower_band_faces = [face_id for face_id, cy in zip(region_faces_for_bounds, face_center_y)
+                                                if cy <= height_cut]
+                            min_band_faces = max(min_faces, min_faces // 2)
+                            if len(lower_band_faces) >= min_band_faces:
+                                region_center_local, region_bounds = self._calculateRegionBounds(
+                                    vertices_local, indices, lower_band_faces
+                                )
+                                min_bounds, max_bounds = region_bounds
+                                region_faces_for_bounds = lower_band_faces
+                                Logger.log(
+                                    "d",
+                                    "Dangling bounds tightened: faces=%d height_cut=%.3f",
+                                    len(region_faces_for_bounds),
+                                    height_cut,
+                                )
+                    if dangling_vertex_regions_active:
+                        region_vertex_ids = numpy.unique(indices[region_faces_for_bounds])
+                        region_vertex_mask = numpy.zeros(len(vertices_local), dtype=bool)
+                        region_vertex_mask[region_vertex_ids] = True
+                        max_center_y = float(face_centers_world[region_faces_for_bounds][:, 1].max())
+                        max_bounds[1] = min(max_bounds[1], max_center_y + 0.05)
+                        Logger.log(
+                            "d",
+                            "Dangling bounds: faces=%d vertices=%d max_center_y=%.3f",
+                            len(region_faces_for_bounds),
+                            int(region_vertex_mask.sum()),
+                            max_center_y,
+                        )
 
                     # Calculate region dimensions in local space
                     region_size = max_bounds - min_bounds
 
-                    # Add padding (20% on each side)
-                    padding_factor = 1.4  # 20% padding on each side = 1.4x total size
+                    # Add padding around the region
+                    padding_factor = 1.4
+                    padding_factor_y = 1.4
+                    if dangling_vertex_regions_active:
+                        padding_factor = 1.25
+                        padding_factor_y = 1.15
                     padded_size_x = float(region_size[0] * padding_factor)
-                    padded_size_y = float(region_size[1] * padding_factor)
+                    padded_size_y = float(region_size[1] * padding_factor_y)
                     padded_size_z = float(region_size[2] * padding_factor)
 
                     # Ensure minimum size of 1mm
@@ -2240,21 +2786,86 @@ class MySupportImprover(Tool):
                     position_local_y = max_bounds[1] - (padded_size_y / 2.0)
                     position_local_z = (min_bounds[2] + max_bounds[2]) / 2.0
 
+                    if dangling_vertex_regions_active:
+                        shrink_attempts = 0
+                        top_y = max_bounds[1]
+                        Logger.log(
+                            "d",
+                            "Dangling volume start: size=[%.2f, %.2f, %.2f] top_y=%.3f",
+                            padded_size_x,
+                            padded_size_y,
+                            padded_size_z,
+                            top_y,
+                        )
+                        while shrink_attempts < 6:
+                            min_x = position_local_x - (padded_size_x / 2.0)
+                            max_x = position_local_x + (padded_size_x / 2.0)
+                            min_z = position_local_z - (padded_size_z / 2.0)
+                            max_z = position_local_z + (padded_size_z / 2.0)
+
+                            above_mask = vertices_local[:, 1] > (top_y + 0.05)
+                            inside_mask = (
+                                (vertices_local[:, 0] >= min_x) & (vertices_local[:, 0] <= max_x) &
+                                (vertices_local[:, 2] >= min_z) & (vertices_local[:, 2] <= max_z)
+                            )
+                            top_band_mask = vertices_local[:, 1] >= (top_y - 0.02)
+                            top_inside_other = False
+                            if region_vertex_mask is not None:
+                                top_inside_other = numpy.any(top_band_mask & inside_mask & ~region_vertex_mask)
+                            overlap_above = int(numpy.count_nonzero(above_mask & inside_mask))
+                            if overlap_above == 0 and not top_inside_other:
+                                break
+
+                            new_size_x = max(region_size[0], padded_size_x * 0.9)
+                            new_size_z = max(region_size[2], padded_size_z * 0.9)
+                            if new_size_x == padded_size_x and new_size_z == padded_size_z:
+                                break
+                            padded_size_x = new_size_x
+                            padded_size_z = new_size_z
+                            shrink_attempts += 1
+                            Logger.log(
+                                "d",
+                                "Dangling shrink %d: above=%d top_other=%s size=[%.2f, %.2f, %.2f]",
+                                shrink_attempts,
+                                overlap_above,
+                                str(top_inside_other),
+                                padded_size_x,
+                                padded_size_y,
+                                padded_size_z,
+                            )
+                        Logger.log(
+                            "d",
+                            "Dangling volume final: size=[%.2f, %.2f, %.2f] attempts=%d",
+                            padded_size_x,
+                            padded_size_y,
+                            padded_size_z,
+                            shrink_attempts,
+                        )
+
                     center_local_vec = Vector(position_local_x, position_local_y, position_local_z)
                     center_world = center_local_vec.preMultiply(world_transform)
 
                     # Create a support blocker sized to fit the region
                     self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
                     created_count += 1
+                    if total_regions > 0:
+                        progress_value = 75 + int(20 * (processed_regions / total_regions))
+                        self._updateProgress(
+                            f"Created {created_count} of {total_regions} blockers...",
+                            min(95, progress_value),
+                        )
 
                     Logger.log("i", f"Created support blocker for region {region_id+1} ({len(region_faces)} faces) at world pos: [{center_world.x:.2f}, {center_world.y:.2f}, {center_world.z:.2f}], size: [{padded_size_x:.2f}, {padded_size_y:.2f}, {padded_size_z:.2f}]")
 
             Logger.log("i", f"=== CREATED {created_count} SUPPORT BLOCKERS ===")
+            self._updateProgress(f"Created {created_count} support blockers.", 100)
 
         except Exception as e:
             Logger.log("e", f"Failed to auto-detect overhangs: {e}")
             import traceback
             Logger.log("e", traceback.format_exc())
+        finally:
+            self._closeProgress()
 
     def _rebuildIndexedMesh(self, vertices):
         """Rebuild index buffer for non-indexed mesh by merging duplicate vertices"""
@@ -2291,6 +2902,81 @@ class MySupportImprover(Tool):
         Logger.log("i", f"Vertex reduction: {reduction:.1f}% ({len(vertices)} â†’ {len(unique_vertices)})")
 
         return unique_vertices, indices
+
+    def _getCachedMeshData(self, node: CuraSceneNode):
+        mesh_data = node.getMeshData()
+        if not mesh_data:
+            return None
+
+        cache_key = id(node)
+        mesh_data_id = id(mesh_data)
+        vertex_count = mesh_data.getVertexCount()
+        cache = self._mesh_cache.get(cache_key)
+        if cache and cache.get("mesh_data_id") == mesh_data_id and cache.get("vertex_count") == vertex_count:
+            return cache
+
+        vertices_local = mesh_data.getVertices()
+        if vertices_local is None or len(vertices_local) == 0:
+            return None
+
+        reindexed = False
+        if not mesh_data.hasIndices():
+            Logger.log("i", "Non-indexed mesh detected, rebuilding indices...")
+            vertices_local, indices = self._rebuildIndexedMesh(vertices_local)
+            reindexed = True
+        else:
+            indices = mesh_data.getIndices()
+            if self._meshNeedsIndexRebuild(vertices_local, indices):
+                Logger.log("i", "Indexed mesh has no shared vertices; rebuilding indices for adjacency...")
+                expanded_vertices = numpy.array(indices, dtype=numpy.int32).reshape(-1)
+                vertices_local, indices = self._rebuildIndexedMesh(vertices_local[expanded_vertices])
+                reindexed = True
+
+        face_normals_from_mesh = None
+        if mesh_data.hasNormals() and not reindexed:
+            normals = mesh_data.getNormals()
+            if normals is not None and len(normals) > 0:
+                normals = numpy.array(normals, dtype=numpy.float32)
+                if mesh_data.hasIndices():
+                    if len(normals) == len(vertices_local):
+                        face_normals_from_mesh = self._computeFaceNormalsFromVertexNormals(normals, indices)
+                    elif len(normals) == len(indices):
+                        face_normals_from_mesh = normals
+                else:
+                    if len(normals) == len(vertices_local):
+                        face_normals_from_mesh = normals.reshape(-1, 3, 3).mean(axis=1)
+                        lengths = numpy.linalg.norm(face_normals_from_mesh, axis=1, keepdims=True)
+                        face_normals_from_mesh = face_normals_from_mesh / numpy.maximum(lengths, 1e-10)
+                    elif len(normals) == len(indices):
+                        face_normals_from_mesh = normals
+
+        face_normals_geom = self._compute_face_normals(vertices_local, indices)
+        face_centers_local = self._computeFaceCenters(vertices_local, indices)
+
+        cache = {
+            "mesh_data_id": mesh_data_id,
+            "vertex_count": vertex_count,
+            "vertices_local": vertices_local,
+            "indices": indices,
+            "reindexed": reindexed,
+            "face_normals_from_mesh": face_normals_from_mesh,
+            "face_normals_geom": face_normals_geom,
+            "face_centers_local": face_centers_local,
+            "face_adjacency": None,
+            "vertex_adjacency": None,
+        }
+        self._mesh_cache[cache_key] = cache
+        return cache
+
+    def _getCachedFaceAdjacency(self, cache: dict):
+        if cache["face_adjacency"] is None:
+            cache["face_adjacency"] = self._buildAdjacencyGraph(cache["indices"])
+        return cache["face_adjacency"]
+
+    def _getCachedVertexAdjacency(self, cache: dict, vertex_count: int):
+        if cache["vertex_adjacency"] is None:
+            cache["vertex_adjacency"] = self._buildVertexAdjacency(cache["indices"], vertex_count)
+        return cache["vertex_adjacency"]
 
     def _meshNeedsIndexRebuild(self, vertices, indices) -> bool:
         """Return True when indexed mesh has no shared vertices (triangle soup)."""

@@ -273,6 +273,210 @@ def detect_dangling_faces(indices: np.ndarray, dangling_vertex_mask: np.ndarray,
     return np.where(face_mask)[0].astype(np.int32)
 
 
+def find_dangling_vertex_regions(vertices: np.ndarray, indices: np.ndarray,
+                                 min_drop: float, min_face_y: float
+                                 ) -> Tuple[List[Set[int]], List[Set[int]]]:
+    """Find connected vertex regions where no vertex has a lower neighbor."""
+    if len(vertices) == 0 or len(indices) == 0:
+        return [], []
+
+    adjacency = build_vertex_adjacency(indices, len(vertices))
+    vertex_y = vertices[:, 1]
+    eligible = vertex_y > min_face_y
+
+    has_lower = np.zeros(len(vertices), dtype=bool)
+    for vertex_id in range(len(vertices)):
+        if not eligible[vertex_id]:
+            continue
+        v_y = vertex_y[vertex_id]
+        for neighbor in adjacency[vertex_id]:
+            if vertex_y[neighbor] < (v_y - min_drop):
+                has_lower[vertex_id] = True
+                break
+
+    dangling_mask = eligible & ~has_lower
+    seeds = np.where(dangling_mask)[0]
+
+    assigned = np.zeros(len(vertices), dtype=bool)
+    regions: List[Set[int]] = []
+    for seed in seeds:
+        if assigned[seed]:
+            continue
+        region = {seed}
+        assigned[seed] = True
+        queue = deque([seed])
+        while queue:
+            current = queue.popleft()
+            for neighbor in adjacency[current]:
+                if assigned[neighbor] or not dangling_mask[neighbor]:
+                    continue
+                assigned[neighbor] = True
+                region.add(neighbor)
+                queue.append(neighbor)
+        if region:
+            regions.append(region)
+
+    return regions, adjacency
+
+
+def merge_small_dangling_regions(regions: List[Set[int]], adjacency: List[Set[int]],
+                                 min_vertices: int) -> List[Set[int]]:
+    """Merge small dangling regions into a single neighboring region."""
+    if not regions:
+        return regions
+
+    region_id = [-1] * len(adjacency)
+    for idx, region in enumerate(regions):
+        for vertex_id in region:
+            region_id[int(vertex_id)] = idx
+
+    region_sizes = [len(region) for region in regions]
+    small = [size < min_vertices for size in region_sizes]
+    parent = list(range(len(regions)))
+
+    def find_root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a: int, b: int) -> None:
+        ra = find_root(a)
+        rb = find_root(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    region_neighbors = [set() for _ in range(len(regions))]
+    for vertex_id, neighbors in enumerate(adjacency):
+        region_a = region_id[vertex_id]
+        if region_a < 0:
+            continue
+        for neighbor in neighbors:
+            region_b = region_id[neighbor]
+            if region_b < 0 or region_a == region_b:
+                continue
+            region_neighbors[region_a].add(region_b)
+
+    for idx, is_small in enumerate(small):
+        if not is_small:
+            continue
+        neighbors = region_neighbors[idx]
+        if not neighbors:
+            continue
+        best_neighbor = max(neighbors, key=lambda n: region_sizes[n])
+        union(idx, best_neighbor)
+
+    merged: Dict[int, Set[int]] = {}
+    for idx, region in enumerate(regions):
+        root = find_root(idx)
+        merged.setdefault(root, set()).update(region)
+
+    return list(merged.values())
+
+
+def expand_dangling_face_region(seed_faces: np.ndarray,
+                                adjacency: Dict[int, List[int]],
+                                candidate_mask: np.ndarray,
+                                max_faces: int,
+                                max_depth: int) -> List[int]:
+    """Expand seed faces into a local candidate-face region."""
+    if seed_faces is None or len(seed_faces) == 0:
+        return []
+
+    visited = set(int(face_id) for face_id in seed_faces)
+    queue = deque((int(face_id), 0) for face_id in seed_faces)
+
+    while queue:
+        face_id, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        for neighbor in adjacency.get(face_id, []):
+            if neighbor in visited:
+                continue
+            if not candidate_mask[neighbor]:
+                continue
+            visited.add(neighbor)
+            if len(visited) >= max_faces:
+                return list(visited)
+            queue.append((neighbor, depth + 1))
+
+    return list(visited)
+
+
+def merge_overlapping_face_regions(regions: List[List[int]]) -> List[List[int]]:
+    """Merge face regions that overlap."""
+    if not regions:
+        return []
+
+    region_sets = [set(region) for region in regions]
+    parent = list(range(len(region_sets)))
+
+    def find_root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a: int, b: int) -> None:
+        ra = find_root(a)
+        rb = find_root(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(len(region_sets)):
+        for j in range(i + 1, len(region_sets)):
+            if region_sets[i] & region_sets[j]:
+                union(i, j)
+
+    merged: Dict[int, Set[int]] = {}
+    for idx, region in enumerate(region_sets):
+        root = find_root(idx)
+        merged.setdefault(root, set()).update(region)
+
+    return [list(region) for region in merged.values()]
+
+
+def dangling_vertex_regions_to_faces(vertex_regions: List[Set[int]],
+                                     indices: np.ndarray,
+                                     face_mask: np.ndarray | None = None
+                                     ) -> List[List[int]]:
+    """Convert dangling vertex regions to face regions, with a loose fallback."""
+    if not vertex_regions or len(indices) == 0:
+        return []
+
+    vertex_count = int(indices.max()) + 1 if len(indices) else 0
+    region_id = [-1] * vertex_count
+    for idx, region in enumerate(vertex_regions):
+        for vertex_id in region:
+            region_id[int(vertex_id)] = idx
+
+    face_regions: List[List[int]] = [[] for _ in range(len(vertex_regions))]
+    loose_regions: List[List[int]] = [[] for _ in range(len(vertex_regions))]
+    for face_id, face in enumerate(indices):
+        if face_mask is not None and not bool(face_mask[face_id]):
+            continue
+        v0, v1, v2 = int(face[0]), int(face[1]), int(face[2])
+        rid = region_id[v0]
+        if rid >= 0 and rid == region_id[v1] == region_id[v2]:
+            face_regions[rid].append(face_id)
+            continue
+        region_ids = [region_id[v0], region_id[v1], region_id[v2]]
+        region_ids = [rid for rid in region_ids if rid >= 0]
+        if not region_ids:
+            continue
+        pick = max(set(region_ids), key=region_ids.count)
+        loose_regions[pick].append(face_id)
+
+    combined = []
+    for idx, region_faces in enumerate(face_regions):
+        if region_faces:
+            combined.append(region_faces)
+            continue
+        if loose_regions[idx]:
+            combined.append(loose_regions[idx])
+    return combined
+
+
 def compute_face_lower_fraction_and_convexity(face_centers: np.ndarray,
                                               face_normals: np.ndarray,
                                               adjacency: Dict[int, List[int]],
@@ -868,58 +1072,51 @@ class TestExportedMeshOverhangs(unittest.TestCase):
 
     def test_dangling_vertex_detection_finds_two_regions(self):
         """Dangling-vertex pipeline should find two dangling regions in the export."""
-        face_normals = compute_face_normals(self.vertices, self.indices)
-        build_direction = np.array([0.0, -1.0, 0.0], dtype=np.float32)
-        downward_mask = (face_normals @ build_direction) > 0.0
-        if not downward_mask.any():
-            self.skipTest("No downward faces detected in exported mesh.")
-
-        adjacency = build_face_adjacency_graph(self.indices)
-        face_centers = compute_face_centers(self.vertices, self.indices)
         mesh_min_y = float(self.vertices[:, 1].min())
         min_face_y = mesh_min_y + 0.2
         if mesh_min_y > 0.5:
             min_face_y = mesh_min_y
 
-        dangling_vertex_mask = detect_dangling_vertices(
-            self.vertices, self.indices, downward_mask, min_drop=0.05
+        min_faces = 6
+        face_normals = compute_face_normals(self.vertices, self.indices)
+        build_direction = np.array([0.0, -1.0, 0.0], dtype=np.float32)
+        downward_mask = (face_normals @ build_direction) > 0.0
+        overhang_ids, _ = detect_overhangs(self.vertices, self.indices, threshold_angle=45.0)
+        overhang_mask = np.zeros(len(self.indices), dtype=bool)
+        if len(overhang_ids) > 0:
+            overhang_mask[overhang_ids] = True
+        face_down_dot = np.clip(face_normals @ build_direction, -1.0, 1.0)
+        dangling_candidate_mask = downward_mask & overhang_mask
+
+        vertex_regions, adjacency = find_dangling_vertex_regions(
+            self.vertices, self.indices, min_drop=0.0, min_face_y=min_face_y
         )
-        dangling_face_ids = detect_dangling_faces(
-            self.indices, dangling_vertex_mask, downward_mask
+        if not vertex_regions:
+            self.fail("No dangling vertex regions found in exported mesh.")
+
+        vertex_regions = merge_small_dangling_regions(
+            vertex_regions, adjacency, min_vertices=max(3, min_faces * 3)
         )
-        if len(dangling_face_ids) == 0:
-            self.fail("No dangling faces found in exported mesh.")
+        adjacency_faces = build_face_adjacency_graph(self.indices)
+        expanded_regions = []
+        for region in vertex_regions:
+            region_mask = np.zeros(len(self.vertices), dtype=bool)
+            region_mask[list(region)] = True
+            seed_faces = np.where(
+                dangling_candidate_mask & np.any(region_mask[self.indices], axis=1)
+            )[0]
+            expanded = expand_dangling_face_region(
+                seed_faces,
+                adjacency_faces,
+                dangling_candidate_mask,
+                max_faces=180,
+                max_depth=4,
+            )
+            if expanded:
+                expanded_regions.append(expanded)
 
-        dangling_face_ids = dangling_face_ids[face_centers[dangling_face_ids][:, 1] > min_face_y]
-        if len(dangling_face_ids) == 0:
-            self.fail("Dangling faces filtered out near build plate.")
-
-        downward_face_ids = np.where(downward_mask)[0]
-        regions = find_connected_overhang_regions(downward_face_ids, downward_mask, adjacency)
-        dangling_set = set(int(face_id) for face_id in dangling_face_ids)
-        regions = [region for region in regions if any(face_id in dangling_set for face_id in region)]
-
-        lower_fraction, convex_pos, convex_total = compute_face_lower_fraction_and_convexity(
-            face_centers, face_normals, adjacency, min_delta_y=0.05
-        )
-
-        region_lower_fraction_threshold = 0.35
-        convexity_threshold = 0.6
-        min_faces = 10
-        kept = []
-        for region in regions:
-            region_dangling = [face_id for face_id in region if face_id in dangling_set]
-            if not region_dangling:
-                continue
-            if float(lower_fraction[region_dangling].mean()) > region_lower_fraction_threshold:
-                continue
-            total = int(convex_total[region_dangling].sum())
-            if total > 0:
-                score = float(convex_pos[region_dangling].sum()) / total
-                if score < convexity_threshold:
-                    continue
-            if len(region_dangling) >= min_faces:
-                kept.append(region_dangling)
+        face_regions = merge_overlapping_face_regions(expanded_regions)
+        kept = [region for region in face_regions if len(region) >= min_faces]
 
         self.assertEqual(len(kept), 2)
 
