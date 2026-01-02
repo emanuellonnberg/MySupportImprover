@@ -2159,7 +2159,8 @@ class MySupportImprover(Tool):
         return numpy.where(face_mask)[0].astype(numpy.int32)
 
     def _findDanglingVertexRegions(self, vertices_world: numpy.ndarray, indices: numpy.ndarray,
-                                   min_drop: float, min_face_y: float) -> Tuple[List[Set[int]], numpy.ndarray]:
+                                   min_drop: float, min_face_y: float,
+                                   height_epsilon: float = 0.0) -> Tuple[List[Set[int]], numpy.ndarray]:
         """Find connected vertex regions where no vertex has a lower neighbor."""
         vertex_count = len(vertices_world)
         if vertex_count == 0 or len(indices) == 0:
@@ -2175,7 +2176,7 @@ class MySupportImprover(Tool):
                 continue
             v_y = vertex_y[vertex_id]
             for neighbor in adjacency[vertex_id]:
-                if vertex_y[neighbor] < (v_y - min_drop):
+                if vertex_y[neighbor] < (v_y - min_drop - height_epsilon):
                     has_lower[vertex_id] = True
                     break
 
@@ -2183,10 +2184,11 @@ class MySupportImprover(Tool):
         seeds = numpy.where(dangling_mask)[0]
         Logger.log(
             "d",
-            "Dangling vertex stats: eligible=%d dangling=%d min_drop=%.3f",
+            "Dangling vertex stats: eligible=%d dangling=%d min_drop=%.3f eps=%.3f",
             int(numpy.count_nonzero(eligible)),
             int(len(seeds)),
             float(min_drop),
+            float(height_epsilon),
         )
         if len(seeds) > 0:
             max_debug = 30
@@ -2352,6 +2354,83 @@ class MySupportImprover(Tool):
 
         return [list(region) for region in merged.values()]
 
+    def _mergeOverlappingFaceRegionsWithVertices(self, face_regions: List[List[int]],
+                                                 vertex_regions: List[Set[int]]) -> Tuple[List[List[int]], List[List[int]]]:
+        """Merge overlapping face regions and union corresponding vertex regions."""
+        if not face_regions:
+            return [], []
+
+        region_sets = [set(region) for region in face_regions]
+        parent = list(range(len(region_sets)))
+
+        def find_root(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(a, b):
+            ra = find_root(a)
+            rb = find_root(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i in range(len(region_sets)):
+            for j in range(i + 1, len(region_sets)):
+                if region_sets[i] & region_sets[j]:
+                    union(i, j)
+
+        merged_faces = {}
+        merged_vertices = {}
+        for idx, region in enumerate(region_sets):
+            root = find_root(idx)
+            merged_faces.setdefault(root, set()).update(region)
+            merged_vertices.setdefault(root, set()).update(vertex_regions[idx])
+
+        merged_face_list = [list(region) for region in merged_faces.values()]
+        merged_vertex_list = [list(region) for region in merged_vertices.values()]
+        return merged_face_list, merged_vertex_list
+
+    def _expandDanglingVertexRegionUpwards(self, region: Set[int], vertices: numpy.ndarray,
+                                           adjacency: Dict[int, List[int]],
+                                           min_drop: float = 0.0,
+                                           height_epsilon: float = 0.0) -> Set[int]:
+        """Expand a dangling vertex region upward while all lower neighbors stay inside the region."""
+        if not region:
+            return set()
+
+        expanded = set(int(v) for v in region)
+        use_dict = hasattr(adjacency, "get")
+        changed = True
+        safety = 0
+        while changed and safety < 1000:
+            changed = False
+            safety += 1
+            for vertex_id in list(expanded):
+                if use_dict:
+                    neighbors = adjacency.get(int(vertex_id), [])
+                else:
+                    neighbors = adjacency[int(vertex_id)]
+                for neighbor in neighbors:
+                    if neighbor in expanded:
+                        continue
+                    neighbor_y = vertices[neighbor][1]
+                    if use_dict:
+                        neighbor_adjacency = adjacency.get(int(neighbor), [])
+                    else:
+                        neighbor_adjacency = adjacency[int(neighbor)]
+                    lower_neighbors = [
+                        int(nid) for nid in neighbor_adjacency
+                        if vertices[nid][1] < (neighbor_y - min_drop - height_epsilon)
+                    ]
+                    if all(nid in expanded for nid in lower_neighbors):
+                        expanded.add(int(neighbor))
+                        changed = True
+            if safety >= 1000:
+                Logger.log("w", "Dangling vertex expansion reached max iterations (size=%d)", len(expanded))
+
+        return expanded
+
     def _danglingVertexRegionsToFaceRegions(self, vertex_regions: List[Set[int]],
                                             indices: numpy.ndarray,
                                             face_mask: Optional[numpy.ndarray] = None
@@ -2464,7 +2543,11 @@ class MySupportImprover(Tool):
             adjacency_all = self._getCachedFaceAdjacency(cache)
             face_centers_local = cache["face_centers_local"]
             face_centers_world = self._transformVertices(face_centers_local, world_transform)
+            face_vertices_world = vertices_world[indices]
+            face_min_world = face_vertices_world.min(axis=1)
+            face_max_world = face_vertices_world.max(axis=1)
             mesh_min_y = float(vertices_world[:, 1].min()) if len(vertices_world) else 0.0
+            mesh_max_y = float(vertices_world[:, 1].max()) if len(vertices_world) else 0.0
             min_face_y = mesh_min_y + 0.2
             if mesh_min_y > 0.5:
                 min_face_y = mesh_min_y
@@ -2521,12 +2604,19 @@ class MySupportImprover(Tool):
             min_faces = min_faces_overhang
             regions = []
             dangling_vertex_regions_active = False
+            dangling_region_vertices = None
 
             if self._detect_dangling_vertices:
                 self._updateProgress("Detecting dangling regions...", 35)
                 dangling_min_drop = 0.0
+                dangling_height_epsilon_seed = 0.0
+                dangling_height_epsilon_expand = 0.005
                 dangling_regions, dangling_seed_mask = self._findDanglingVertexRegions(
-                    vertices_world, indices, min_drop=dangling_min_drop, min_face_y=min_face_y
+                    vertices_world,
+                    indices,
+                    min_drop=dangling_min_drop,
+                    min_face_y=min_face_y,
+                    height_epsilon=dangling_height_epsilon_seed,
                 )
                 vertex_adjacency = self._getCachedVertexAdjacency(cache, len(vertices_world))
                 self._logDanglingProbeVolumes(
@@ -2546,10 +2636,18 @@ class MySupportImprover(Tool):
                         dangling_regions, vertex_adjacency, min_vertices=max(3, min_faces_dangling * 3)
                     )
                     expanded_regions = []
+                    expanded_vertex_regions = []
                     vertex_count = len(vertices_world)
                     for idx, region in enumerate(dangling_regions, start=1):
+                        expanded_vertex_region = self._expandDanglingVertexRegionUpwards(
+                            region,
+                            vertices_world,
+                            vertex_adjacency,
+                            min_drop=dangling_min_drop,
+                            height_epsilon=dangling_height_epsilon_expand,
+                        )
                         region_mask = numpy.zeros(vertex_count, dtype=bool)
-                        region_mask[list(region)] = True
+                        region_mask[list(expanded_vertex_region)] = True
                         seed_faces = numpy.where(
                             dangling_candidate_mask & numpy.any(region_mask[indices], axis=1)
                         )[0]
@@ -2565,15 +2663,19 @@ class MySupportImprover(Tool):
                         )
                         Logger.log(
                             "d",
-                            "Dangling region %d: seeds=%d seed_faces=%d expanded_faces=%d",
+                            "Dangling region %d: seeds=%d expanded_vertices=%d seed_faces=%d expanded_faces=%d",
                             idx,
                             len(region),
+                            len(expanded_vertex_region),
                             len(seed_faces),
                             len(expanded),
                         )
                         expanded_regions.append(expanded)
+                        expanded_vertex_regions.append(expanded_vertex_region)
 
-                    regions = self._mergeOverlappingFaceRegions(expanded_regions)
+                    regions, dangling_region_vertices = self._mergeOverlappingFaceRegionsWithVertices(
+                        expanded_regions, expanded_vertex_regions
+                    )
                     if regions:
                         dangling_vertex_regions_active = True
                         min_faces = min_faces_dangling
@@ -2710,12 +2812,14 @@ class MySupportImprover(Tool):
 
                 region_faces_for_bounds = region_faces
                 region_vertex_mask = None
+                dangling_region_faces_full = None
                 if dangling_vertex_regions_active:
                     candidate_region_faces = [face_id for face_id in region_faces if dangling_candidate_mask[face_id]]
                     if not candidate_region_faces:
                         Logger.log("d", f"Skipping region {region_id + 1}: no downward overhang faces")
                         continue
                     region_faces_for_bounds = candidate_region_faces
+                    dangling_region_faces_full = candidate_region_faces
                 elif len(filtered_set) > 0:
                     filtered_region_faces = [face_id for face_id in region_faces if face_id in filtered_set]
                     if len(filtered_region_faces) == 0:
@@ -2730,6 +2834,10 @@ class MySupportImprover(Tool):
                     # Calculate region center and bounds in LOCAL space
                     region_center_local, region_bounds = self._calculateRegionBounds(vertices_local, indices, region_faces_for_bounds)
                     min_bounds, max_bounds = region_bounds
+                    min_bounds_world = None
+                    max_bounds_world = None
+                    min_bounds_world_faces = None
+                    max_bounds_world_faces = None
                     if dangling_vertex_regions_active:
                         face_center_y = face_centers_local[region_faces_for_bounds][:, 1]
                         if len(face_center_y) > 0 and len(region_faces_for_bounds) >= max(200, min_faces * 20):
@@ -2750,16 +2858,36 @@ class MySupportImprover(Tool):
                                     height_cut,
                                 )
                     if dangling_vertex_regions_active:
-                        region_vertex_ids = numpy.unique(indices[region_faces_for_bounds])
+                        dangling_faces_full = dangling_region_faces_full or region_faces_for_bounds
+                        region_face_mask = numpy.zeros(len(indices), dtype=bool)
+                        region_face_mask[dangling_faces_full] = True
+                        _, face_bounds_world = self._calculateRegionBounds(vertices_world, indices, region_faces_for_bounds)
+                        min_bounds_world_faces, max_bounds_world_faces = face_bounds_world
+                        region_vertex_ids = None
+                        if dangling_region_vertices is not None and region_id < len(dangling_region_vertices):
+                            face_vertex_ids = numpy.unique(indices[dangling_faces_full])
+                            region_vertex_ids = numpy.unique(
+                                numpy.concatenate(
+                                    (numpy.array(dangling_region_vertices[region_id], dtype=numpy.int32), face_vertex_ids)
+                                )
+                            )
+                        if region_vertex_ids is None or region_vertex_ids.size == 0:
+                            region_vertex_ids = numpy.unique(indices[dangling_faces_full])
                         region_vertex_mask = numpy.zeros(len(vertices_local), dtype=bool)
                         region_vertex_mask[region_vertex_ids] = True
+                        if region_vertex_ids is not None and region_vertex_ids.size > 0:
+                            region_face_mask |= (numpy.sum(region_vertex_mask[indices], axis=1) >= 2)
+                        region_vertices_world = vertices_world[region_vertex_ids]
+                        min_bounds_world = region_vertices_world.min(axis=0)
+                        max_bounds_world = region_vertices_world.max(axis=0)
                         max_center_y = float(face_centers_world[region_faces_for_bounds][:, 1].max())
-                        max_bounds[1] = min(max_bounds[1], max_center_y + 0.05)
                         Logger.log(
                             "d",
-                            "Dangling bounds: faces=%d vertices=%d max_center_y=%.3f",
+                            "Dangling bounds: faces=%d vertices=%d min_y=%.3f max_y=%.3f max_center_y=%.3f",
                             len(region_faces_for_bounds),
                             int(region_vertex_mask.sum()),
+                            float(min_bounds_world[1]),
+                            float(max_bounds_world[1]),
                             max_center_y,
                         )
 
@@ -2770,8 +2898,8 @@ class MySupportImprover(Tool):
                     padding_factor = 1.4
                     padding_factor_y = 1.4
                     if dangling_vertex_regions_active:
-                        padding_factor = 1.25
-                        padding_factor_y = 1.15
+                        padding_factor = 1.15
+                        padding_factor_y = 1.0
                     padded_size_x = float(region_size[0] * padding_factor)
                     padded_size_y = float(region_size[1] * padding_factor_y)
                     padded_size_z = float(region_size[2] * padding_factor)
@@ -2781,69 +2909,182 @@ class MySupportImprover(Tool):
                     padded_size_y = max(1.0, padded_size_y)
                     padded_size_z = max(1.0, padded_size_z)
 
-                    # Position volume so its TOP aligns with the region's highest point
-                    position_local_x = (min_bounds[0] + max_bounds[0]) / 2.0
-                    position_local_y = max_bounds[1] - (padded_size_y / 2.0)
-                    position_local_z = (min_bounds[2] + max_bounds[2]) / 2.0
-
                     if dangling_vertex_regions_active:
+                        bottom_clearance = 0.01
+                        top_clearance = 0.01
+                        min_overlap = 0.005
+                        overlap_slack = 0.02
+                        horizontal_threshold = 0.95
+                        build_plate_y = 0.0
+                        if min_bounds_world is None or max_bounds_world is None:
+                            _, bounds_world = self._calculateRegionBounds(vertices_world, indices, dangling_faces_full)
+                            min_bounds_world, max_bounds_world = bounds_world
+                        if min_bounds_world_faces is None or max_bounds_world_faces is None:
+                            min_bounds_world_faces, max_bounds_world_faces = min_bounds_world, max_bounds_world
+                        region_size_world_x = float(max_bounds_world_faces[0] - min_bounds_world_faces[0])
+                        region_size_world_z = float(max_bounds_world_faces[2] - min_bounds_world_faces[2])
+                        min_dangling_y = float(min_bounds_world[1])
+                        base_bottom_y = max(build_plate_y, min_dangling_y - bottom_clearance)
+                        position_world_x = (min_bounds_world_faces[0] + max_bounds_world_faces[0]) / 2.0
+                        position_world_z = (min_bounds_world_faces[2] + max_bounds_world_faces[2]) / 2.0
                         shrink_attempts = 0
-                        top_y = max_bounds[1]
+                        padded_size_x = max(1.0, float(region_size_world_x * padding_factor))
+                        padded_size_z = max(1.0, float(region_size_world_z * padding_factor))
                         Logger.log(
                             "d",
-                            "Dangling volume start: size=[%.2f, %.2f, %.2f] top_y=%.3f",
+                            "Dangling volume start: size=[%.2f, %.2f, %.2f] bottom_y=%.3f min_y=%.3f",
                             padded_size_x,
                             padded_size_y,
                             padded_size_z,
-                            top_y,
+                            base_bottom_y,
+                            min_dangling_y,
                         )
-                        while shrink_attempts < 6:
-                            min_x = position_local_x - (padded_size_x / 2.0)
-                            max_x = position_local_x + (padded_size_x / 2.0)
-                            min_z = position_local_z - (padded_size_z / 2.0)
-                            max_z = position_local_z + (padded_size_z / 2.0)
+                        while shrink_attempts < 10:
+                            min_x = position_world_x - (padded_size_x / 2.0)
+                            max_x = position_world_x + (padded_size_x / 2.0)
+                            min_z = position_world_z - (padded_size_z / 2.0)
+                            max_z = position_world_z + (padded_size_z / 2.0)
 
-                            above_mask = vertices_local[:, 1] > (top_y + 0.05)
-                            inside_mask = (
-                                (vertices_local[:, 0] >= min_x) & (vertices_local[:, 0] <= max_x) &
-                                (vertices_local[:, 2] >= min_z) & (vertices_local[:, 2] <= max_z)
+                            inside_face_mask = (
+                                (face_min_world[:, 0] <= max_x) & (face_max_world[:, 0] >= min_x) &
+                                (face_min_world[:, 2] <= max_z) & (face_max_world[:, 2] >= min_z)
                             )
-                            top_band_mask = vertices_local[:, 1] >= (top_y - 0.02)
-                            top_inside_other = False
-                            if region_vertex_mask is not None:
-                                top_inside_other = numpy.any(top_band_mask & inside_mask & ~region_vertex_mask)
-                            overlap_above = int(numpy.count_nonzero(above_mask & inside_mask))
-                            if overlap_above == 0 and not top_inside_other:
+                            other_face_mask = inside_face_mask & ~region_face_mask
+                            other_face_min_y = face_min_world[other_face_mask][:, 1]
+                            other_face_max_y = face_max_world[other_face_mask][:, 1]
+                            other_face_min_y_blocking = other_face_min_y
+                            other_face_max_y_blocking = other_face_max_y
+                            other_face_min_y_side = other_face_min_y
+                            other_face_max_y_side = other_face_max_y
+                            if other_face_min_y.size > 0:
+                                other_face_normals_y = face_normals_world[other_face_mask][:, 1]
+                                blocking_mask = numpy.abs(other_face_normals_y) >= horizontal_threshold
+                                other_face_min_y_blocking = other_face_min_y[blocking_mask]
+                                other_face_max_y_blocking = other_face_max_y[blocking_mask]
+                                other_face_min_y_side = other_face_min_y[~blocking_mask]
+                                other_face_max_y_side = other_face_max_y[~blocking_mask]
+                            lower_limit = build_plate_y
+                            upper_limit = float(mesh_max_y + top_clearance)
+                            other_above_count = 0
+                            other_below_count = 0
+                            if other_face_min_y_blocking.size > 0:
+                                other_above = other_face_min_y_blocking[other_face_min_y_blocking > (min_dangling_y + min_overlap)]
+                                other_above_count = int(other_above.size)
+                                if other_above.size > 0:
+                                    upper_limit = min(upper_limit, float(other_above.min()) - top_clearance)
+                                other_below = other_face_max_y_blocking[other_face_max_y_blocking < (min_dangling_y - min_overlap)]
+                                other_below_count = int(other_below.size)
+                                if other_below.size > 0:
+                                    lower_limit = max(lower_limit, float(other_below.max()) + bottom_clearance)
+
+                            bottom_y = max(base_bottom_y, lower_limit)
+                            top_y = upper_limit
+
+                            side_intrusion = 0
+                            if other_face_min_y_side.size > 0:
+                                mid_mask = (other_face_max_y_side > (bottom_y + 0.01)) & (other_face_min_y_side < (top_y - 0.01))
+                                side_intrusion = int(numpy.count_nonzero(mid_mask))
+
+                            if (side_intrusion == 0 and
+                                    other_above_count == 0 and
+                                    other_below_count == 0 and
+                                    top_y >= (min_dangling_y + min_overlap - overlap_slack) and
+                                    bottom_y <= (min_dangling_y - min_overlap + overlap_slack)):
+                                if shrink_attempts == 0:
+                                    Logger.log(
+                                        "d",
+                                        "Dangling volume settled: upper=%.3f lower=%.3f side=%d above=%d below=%d size=[%.2f, %.2f, %.2f]",
+                                        upper_limit,
+                                        lower_limit,
+                                        side_intrusion,
+                                        other_above_count,
+                                        other_below_count,
+                                        padded_size_x,
+                                        padded_size_y,
+                                        padded_size_z,
+                                    )
                                 break
 
-                            new_size_x = max(region_size[0], padded_size_x * 0.9)
-                            new_size_z = max(region_size[2], padded_size_z * 0.9)
+                            new_size_x = max(region_size_world_x, padded_size_x * 0.85)
+                            new_size_z = max(region_size_world_z, padded_size_z * 0.85)
                             if new_size_x == padded_size_x and new_size_z == padded_size_z:
+                                if side_intrusion > 0 and other_face_min_y_side.size > 0:
+                                    side_above_min = other_face_min_y_side[other_face_min_y_side > (bottom_y + 0.01)]
+                                    if side_above_min.size > 0:
+                                        top_y = min(top_y, float(side_above_min.min()) - top_clearance)
                                 break
                             padded_size_x = new_size_x
                             padded_size_z = new_size_z
                             shrink_attempts += 1
                             Logger.log(
                                 "d",
-                                "Dangling shrink %d: above=%d top_other=%s size=[%.2f, %.2f, %.2f]",
+                                "Dangling shrink %d: upper=%.3f lower=%.3f side=%d above=%d below=%d size=[%.2f, %.2f, %.2f]",
                                 shrink_attempts,
-                                overlap_above,
-                                str(top_inside_other),
+                                upper_limit,
+                                lower_limit,
+                                side_intrusion,
+                                other_above_count,
+                                other_below_count,
                                 padded_size_x,
                                 padded_size_y,
                                 padded_size_z,
                             )
+
+                        if top_y < (min_dangling_y + min_overlap - overlap_slack):
+                            Logger.log(
+                                "d",
+                                "Skipping region %d: top below dangling min (top_y=%.3f min_y=%.3f)",
+                                region_id + 1,
+                                top_y,
+                                min_dangling_y,
+                            )
+                            continue
+                        if bottom_y > (min_dangling_y - min_overlap + overlap_slack):
+                            Logger.log(
+                                "d",
+                                "Skipping region %d: bottom above dangling min (bottom_y=%.3f min_y=%.3f)",
+                                region_id + 1,
+                                bottom_y,
+                                min_dangling_y,
+                            )
+                            continue
+                        min_clearance = 0.005
+                        if top_y <= bottom_y + min_clearance:
+                            if top_y >= bottom_y - overlap_slack and top_y >= (bottom_y + min_clearance - overlap_slack):
+                                top_y = bottom_y + min_clearance
+                            else:
+                                Logger.log(
+                                    "d",
+                                    "Skipping region %d: no vertical clearance (top_y=%.3f bottom_y=%.3f)",
+                                    region_id + 1,
+                                    top_y,
+                                    bottom_y,
+                                )
+                                continue
+
+                        padded_size_y = float(top_y - bottom_y)
+                        position_world_y = bottom_y + (padded_size_y / 2.0)
                         Logger.log(
                             "d",
-                            "Dangling volume final: size=[%.2f, %.2f, %.2f] attempts=%d",
+                            "Dangling volume final: size=[%.2f, %.2f, %.2f] top_y=%.3f bottom_y=%.3f attempts=%d",
                             padded_size_x,
                             padded_size_y,
                             padded_size_z,
+                            top_y,
+                            bottom_y,
                             shrink_attempts,
                         )
+                    else:
+                        # Position volume so its TOP aligns with the region's highest point
+                        position_local_x = (min_bounds[0] + max_bounds[0]) / 2.0
+                        position_local_y = max_bounds[1] - (padded_size_y / 2.0)
+                        position_local_z = (min_bounds[2] + max_bounds[2]) / 2.0
 
-                    center_local_vec = Vector(position_local_x, position_local_y, position_local_z)
-                    center_world = center_local_vec.preMultiply(world_transform)
+                    if dangling_vertex_regions_active:
+                        center_world = Vector(position_world_x, position_world_y, position_world_z)
+                    else:
+                        center_local_vec = Vector(position_local_x, position_local_y, position_local_z)
+                        center_world = center_local_vec.preMultiply(world_transform)
 
                     # Create a support blocker sized to fit the region
                     self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
