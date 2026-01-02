@@ -36,6 +36,8 @@ import numpy
 from collections import deque
 from typing import List, Dict, Set, Tuple, Optional
 
+from . import geometry_utils
+
 # Suggested solution from fieldOfView . in this discussion solved in Cura 4.9
 # https://github.com/5axes/Calibration-Shapes/issues/1
 # Cura are able to find the scripts from inside the plugin folder if the scripts are into a folder named resources
@@ -745,7 +747,7 @@ class MySupportImprover(Tool):
         """Create a modifier volume using the default cube dimensions from properties"""
         self._createModifierVolumeWithSize(parent, position, self._cube_x, self._cube_y, self._cube_z)
 
-    def _createModifierVolumeWithSize(self, parent: CuraSceneNode, position: Vector, size_x: float, size_y: float, size_z: float):
+    def _createModifierVolumeWithSize(self, parent: CuraSceneNode, position: Vector, size_x: float, size_y: float, size_z: float, rotation_matrix: Optional[numpy.ndarray] = None):
         try:
             node = CuraSceneNode()
 
@@ -847,6 +849,9 @@ class MySupportImprover(Tool):
             op.addOperation(AddSceneNodeOperation(node, self._controller.getScene().getRoot()))
             op.addOperation(SetParentOperation(node, parent))
             op.addOperation(TranslateOperation(node, position, set_position=True))
+            if rotation_matrix is not None:
+                q = Quaternion(rotation_matrix)
+                op.addOperation(RotateOperation(node, q))
             op.push()
 
             CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node)
@@ -3086,8 +3091,17 @@ class MySupportImprover(Tool):
                         center_local_vec = Vector(position_local_x, position_local_y, position_local_z)
                         center_world = center_local_vec.preMultiply(world_transform)
 
+                    # Calculate OBB for the region
+                    region_vertices_local = vertices_local[numpy.unique(indices[region_faces_for_bounds].flatten())]
+                    obb = geometry_utils.calculate_obb_pca(region_vertices_local)
+
+                    # Check for collision
+                    if geometry_utils.check_obb_mesh_collision(obb, vertices_local, indices, excluded_faces=set(region_faces)):
+                        Logger.log("w", f"Region {region_id+1} OBB collides with the mesh, skipping.")
+                        continue
+
                     # Create a support blocker sized to fit the region
-                    self._createModifierVolumeWithSize(node, center_world, padded_size_x, padded_size_y, padded_size_z)
+                    self._createModifierVolumeWithSize(node, Vector(obb['center'][0], obb['center'][1], obb['center'][2]), obb['extents'][0] * 2, obb['extents'][1] * 2, obb['extents'][2] * 2, obb['rotation'])
                     created_count += 1
                     if total_regions > 0:
                         progress_value = 75 + int(20 * (processed_regions / total_regions))
@@ -3579,26 +3593,6 @@ class MySupportImprover(Tool):
 
         return regions
 
-    def _calculateRegionBounds(self, vertices, indices, region_face_ids):
-        """Calculate the center and bounds of a region"""
-        region_vertices = []
-
-        for face_id in region_face_ids:
-            face = indices[face_id]
-            region_vertices.extend([
-                vertices[face[0]],
-                vertices[face[1]],
-                vertices[face[2]]
-            ])
-
-        region_vertices = numpy.array(region_vertices)
-
-        # Calculate bounds
-        min_bounds = region_vertices.min(axis=0)
-        max_bounds = region_vertices.max(axis=0)
-        center = (min_bounds + max_bounds) / 2.0
-
-        return center, (min_bounds, max_bounds)
 
     def _detectSharpVertices(self, vertices, indices, curvature_threshold=2.0):
         """Detect vertices with high curvature (sharp points)

@@ -20,6 +20,8 @@ from collections import deque
 import zipfile
 import tempfile
 
+import geometry_utils
+
 
 def load_mesh_from_json(filepath):
     """Load mesh data from JSON export"""
@@ -272,6 +274,8 @@ def find_connected_overhang_regions(overhang_face_ids, overhang_mask, adjacency)
     return regions
 
 
+
+
 def analyze_overhang_region(region_face_ids, vertices, indices, angles):
     """Analyze properties of an overhang region"""
     # Filter out invalid face IDs
@@ -306,6 +310,9 @@ def analyze_overhang_region(region_face_ids, vertices, indices, angles):
     center = (min_point + max_point) / 2
     extents = (max_point - min_point) / 2
 
+    # Compute OBB
+    obb = geometry_utils.calculate_obb_pca(region_vertices)
+
     return {
         'face_count': len(region_face_ids),
         'vertex_count': len(region_vertex_ids),
@@ -315,7 +322,8 @@ def analyze_overhang_region(region_face_ids, vertices, indices, angles):
         'avg_angle': np.mean(region_angles),
         'bbox_center': center,
         'bbox_extents': extents,
-        'bbox_size': extents * 2
+        'bbox_size': extents * 2,
+        'obb': obb
     }
 
 
@@ -508,6 +516,14 @@ def main():
         print(f"    Average angle: {analysis['avg_angle']:.1f}°")
         print(f"    Bounding box center: [{analysis['bbox_center'][0]:.2f}, {analysis['bbox_center'][1]:.2f}, {analysis['bbox_center'][2]:.2f}]")
         print(f"    Bounding box size: [{analysis['bbox_size'][0]:.2f}, {analysis['bbox_size'][1]:.2f}, {analysis['bbox_size'][2]:.2f}]")
+        if 'obb' in analysis:
+            obb = analysis['obb']
+            print(f"    OBB Center: [{obb['center'][0]:.2f}, {obb['center'][1]:.2f}, {obb['center'][2]:.2f}]")
+            print(f"    OBB Extents: [{obb['extents'][0]:.2f}, {obb['extents'][1]:.2f}, {obb['extents'][2]:.2f}]")
+
+            # Check for collision
+            collides = geometry_utils.check_obb_mesh_collision(obb, vertices, indices, excluded_faces=set(region))
+            print(f"    Collision Check: {'COLLIDES' if collides else 'No Collision'}")
 
     # Highlight clicked region
     if clicked_region:
