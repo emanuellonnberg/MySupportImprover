@@ -496,45 +496,33 @@ class ObjectSplitter(Tool):
 
         Logger.log("d", "Cut plane: origin=%s, normal=%s", str(plane_origin), str(plane_normal))
 
-        # Perform the cut - create two meshes
-        try:
-            # Upper part (positive side of plane)
-            mesh_upper = trimesh.intersections.slice_mesh_plane(
-                tm,
-                plane_normal=plane_normal,
-                plane_origin=plane_origin,
-                cap=True
-            )
+        # Perform the cut - try with capping first, fallback to no cap
+        mesh_upper, mesh_lower, capped = self._sliceMeshWithFallback(tm, plane_origin, plane_normal)
 
-            # Lower part (negative side of plane)
-            mesh_lower = trimesh.intersections.slice_mesh_plane(
-                tm,
-                plane_normal=-plane_normal,  # Flip normal for other side
-                plane_origin=plane_origin,
-                cap=True
-            )
-        except Exception as e:
-            Logger.log("e", "Error during mesh cutting: %s", str(e))
+        if mesh_upper is None or mesh_lower is None:
+            Logger.log("e", "Cut operation failed")
             return
 
         # Check if we got valid meshes
-        if mesh_upper is None or len(mesh_upper.vertices) == 0:
+        if len(mesh_upper.vertices) == 0:
             Logger.log("w", "Upper mesh is empty after cut")
             return
-        if mesh_lower is None or len(mesh_lower.vertices) == 0:
+        if len(mesh_lower.vertices) == 0:
             Logger.log("w", "Lower mesh is empty after cut")
             return
 
-        Logger.log("i", "Cut successful: upper=%d verts, lower=%d verts",
-                   len(mesh_upper.vertices), len(mesh_lower.vertices))
+        Logger.log("i", "Cut successful: upper=%d verts, lower=%d verts, capped=%s",
+                   len(mesh_upper.vertices), len(mesh_lower.vertices), str(capped))
 
-        # Add connectors if enabled
-        if self._connector_enabled:
+        # Add connectors if enabled (only if mesh was capped properly)
+        if self._connector_enabled and capped:
             mesh_upper, mesh_lower = self._addConnectors(
                 mesh_upper, mesh_lower, plane_origin, plane_normal
             )
             Logger.log("i", "After connectors: upper=%d verts, lower=%d verts",
                        len(mesh_upper.vertices), len(mesh_lower.vertices))
+        elif self._connector_enabled and not capped:
+            Logger.log("w", "Skipping connectors - mesh was not capped (open edges)")
 
         # Create new scene nodes for both parts
         original_name = node.getName()
@@ -571,6 +559,118 @@ class ObjectSplitter(Tool):
                    node_upper.getName(), node_lower.getName())
 
         self.cutComplete.emit()
+
+    def _sliceMeshWithFallback(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
+                                plane_normal: numpy.ndarray) -> Tuple[Optional["trimesh.Trimesh"], Optional["trimesh.Trimesh"], bool]:
+        """
+        Slice mesh with multiple fallback strategies for robustness.
+
+        Returns:
+            Tuple of (upper_mesh, lower_mesh, was_capped)
+            was_capped is True if the cut surfaces were closed (watertight result)
+        """
+        mesh_upper = None
+        mesh_lower = None
+        capped = False
+
+        # Strategy 1: Try with capping (ideal case - watertight mesh with rtree)
+        try:
+            mesh_upper = trimesh.intersections.slice_mesh_plane(
+                mesh,
+                plane_normal=plane_normal,
+                plane_origin=plane_origin,
+                cap=True
+            )
+            mesh_lower = trimesh.intersections.slice_mesh_plane(
+                mesh,
+                plane_normal=-plane_normal,
+                plane_origin=plane_origin,
+                cap=True
+            )
+            if mesh_upper is not None and mesh_lower is not None:
+                capped = True
+                Logger.log("d", "Slicing with cap=True succeeded")
+                return mesh_upper, mesh_lower, capped
+        except ImportError as e:
+            # rtree not available
+            Logger.log("w", "Capping requires 'rtree' library: %s. Trying without capping.", str(e))
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "watertight" in error_msg:
+                Logger.log("w", "Mesh is not watertight, cannot cap. Trying without capping.")
+            elif "rtree" in error_msg:
+                Logger.log("w", "rtree library missing: %s. Trying without capping.", str(e))
+            else:
+                Logger.log("w", "Capped slicing failed: %s. Trying without capping.", str(e))
+
+        # Strategy 2: Try without capping (works with non-watertight meshes)
+        try:
+            mesh_upper = trimesh.intersections.slice_mesh_plane(
+                mesh,
+                plane_normal=plane_normal,
+                plane_origin=plane_origin,
+                cap=False
+            )
+            mesh_lower = trimesh.intersections.slice_mesh_plane(
+                mesh,
+                plane_normal=-plane_normal,
+                plane_origin=plane_origin,
+                cap=False
+            )
+            if mesh_upper is not None and mesh_lower is not None:
+                Logger.log("i", "Slicing without capping succeeded (parts will have open cut surfaces)")
+                return mesh_upper, mesh_lower, False
+        except Exception as e:
+            Logger.log("e", "Uncapped slicing also failed: %s", str(e))
+
+        # Strategy 3: Manual vertex-based splitting as last resort
+        try:
+            mesh_upper, mesh_lower = self._manualMeshSplit(mesh, plane_origin, plane_normal)
+            if mesh_upper is not None and mesh_lower is not None:
+                Logger.log("i", "Manual mesh splitting succeeded")
+                return mesh_upper, mesh_lower, False
+        except Exception as e:
+            Logger.log("e", "Manual splitting failed: %s", str(e))
+
+        return None, None, False
+
+    def _manualMeshSplit(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
+                          plane_normal: numpy.ndarray) -> Tuple[Optional["trimesh.Trimesh"], Optional["trimesh.Trimesh"]]:
+        """
+        Manually split mesh by separating faces based on which side of the plane they're on.
+        This is a simple approach that doesn't handle faces crossing the plane perfectly,
+        but works as a fallback when trimesh's slice_mesh_plane fails.
+        """
+        vertices = mesh.vertices
+        faces = mesh.faces
+
+        # Compute signed distance of each vertex to the plane
+        distances = numpy.dot(vertices - plane_origin, plane_normal)
+
+        # For each face, determine which side it's on based on centroid
+        face_centroids = vertices[faces].mean(axis=1)
+        face_distances = numpy.dot(face_centroids - plane_origin, plane_normal)
+
+        # Split faces
+        upper_mask = face_distances >= 0
+        lower_mask = face_distances < 0
+
+        upper_faces = faces[upper_mask]
+        lower_faces = faces[lower_mask]
+
+        if len(upper_faces) == 0 or len(lower_faces) == 0:
+            Logger.log("w", "Manual split resulted in empty mesh on one side")
+            return None, None
+
+        # Create new meshes (reusing all vertices, trimesh will clean up unused ones)
+        mesh_upper = trimesh.Trimesh(vertices=vertices.copy(), faces=upper_faces)
+        mesh_lower = trimesh.Trimesh(vertices=vertices.copy(), faces=lower_faces)
+
+        # Remove unreferenced vertices
+        mesh_upper.remove_unreferenced_vertices()
+        mesh_lower.remove_unreferenced_vertices()
+
+        return mesh_upper, mesh_lower
 
     def _getHorizontalCutPlane(self, mesh: "trimesh.Trimesh", click_pos: Vector) -> Tuple[numpy.ndarray, numpy.ndarray]:
         """Get a horizontal cut plane at the specified height percentage."""
