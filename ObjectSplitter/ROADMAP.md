@@ -50,11 +50,11 @@ Part A (smaller)     Part B (larger)
 ```
 
 **Implementation:**
-- [ ] Determine which part is larger (by volume or bounding box)
-- [ ] Add peg (cylinder) to smaller part's cut face
-- [ ] Add matching hole (boolean subtraction) to larger part's cut face
-- [ ] Configurable peg dimensions (diameter, height)
-- [ ] Slight clearance for fit (e.g., hole 0.2mm larger than peg)
+- [x] Determine which part is larger (by volume or bounding box)
+- [x] Add peg (cylinder) to smaller part's cut face
+- [x] Add matching hole (boolean subtraction) to larger part's cut face
+- [x] Configurable peg dimensions (diameter, height)
+- [x] Slight clearance for fit (e.g., hole 0.2mm larger than peg)
 
 **Parameters:**
 | Parameter | Default | Description |
@@ -68,7 +68,7 @@ Part A (smaller)     Part B (larger)
 
 ### 2.2 Smart Connector Placement
 
-- [ ] Auto-detect good positions on cut surface (away from edges)
+- [x] Auto-detect good positions on cut surface (centroid-based)
 - [ ] Ensure minimum distance from cut surface boundary
 - [ ] For large cuts: multiple connectors in grid pattern
 - [ ] Avoid thin areas that can't support a hole

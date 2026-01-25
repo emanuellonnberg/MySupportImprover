@@ -265,6 +265,186 @@ Item {
             color: UM.Theme.getColor("lining")
         }
 
+        // Connector Section
+        Column {
+            width: parent.width
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+
+            // Connector Enable Toggle
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                CheckBox {
+                    id: connectorCheckBox
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ConnectorEnabled") : true
+
+                    onCheckedChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ConnectorEnabled", checked)
+                        }
+                    }
+                }
+
+                Label {
+                    height: connectorCheckBox.height
+                    text: catalog.i18nc("@label", "Add alignment connectors")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: connectorCheckBox.checked = !connectorCheckBox.checked
+                    }
+                }
+            }
+
+            // Connector description
+            Label {
+                width: parent.width
+                text: "Adds peg to smaller part, hole to larger part"
+                font: UM.Theme.getFont("default_italic")
+                color: UM.Theme.getColor("text_inactive")
+                visible: connectorCheckBox.checked
+                renderType: Text.NativeRendering
+            }
+
+            // Connector Settings (visible when enabled)
+            Column {
+                width: parent.width
+                spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+                visible: connectorCheckBox.checked
+
+                // Diameter
+                Row {
+                    spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                    Label {
+                        height: UM.Theme.getSize("setting_control").height
+                        text: catalog.i18nc("@label", "Diameter:")
+                        font: UM.Theme.getFont("default")
+                        color: UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        renderType: Text.NativeRendering
+                        width: 70
+                    }
+
+                    Slider {
+                        id: diameterSlider
+                        width: 120
+                        from: 2
+                        to: 10
+                        value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ConnectorDiameter") : 4
+                        stepSize: 0.5
+
+                        onValueChanged: {
+                            if (UM.ActiveTool) {
+                                UM.ActiveTool.setProperty("ConnectorDiameter", value)
+                            }
+                        }
+                    }
+
+                    Label {
+                        height: UM.Theme.getSize("setting_control").height
+                        text: diameterSlider.value.toFixed(1) + " mm"
+                        font: UM.Theme.getFont("default")
+                        color: UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        renderType: Text.NativeRendering
+                        width: 50
+                    }
+                }
+
+                // Height
+                Row {
+                    spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                    Label {
+                        height: UM.Theme.getSize("setting_control").height
+                        text: catalog.i18nc("@label", "Height:")
+                        font: UM.Theme.getFont("default")
+                        color: UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        renderType: Text.NativeRendering
+                        width: 70
+                    }
+
+                    Slider {
+                        id: heightConnectorSlider
+                        width: 120
+                        from: 1
+                        to: 8
+                        value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ConnectorHeight") : 3
+                        stepSize: 0.5
+
+                        onValueChanged: {
+                            if (UM.ActiveTool) {
+                                UM.ActiveTool.setProperty("ConnectorHeight", value)
+                            }
+                        }
+                    }
+
+                    Label {
+                        height: UM.Theme.getSize("setting_control").height
+                        text: heightConnectorSlider.value.toFixed(1) + " mm"
+                        font: UM.Theme.getFont("default")
+                        color: UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        renderType: Text.NativeRendering
+                        width: 50
+                    }
+                }
+
+                // Clearance
+                Row {
+                    spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                    Label {
+                        height: UM.Theme.getSize("setting_control").height
+                        text: catalog.i18nc("@label", "Clearance:")
+                        font: UM.Theme.getFont("default")
+                        color: UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        renderType: Text.NativeRendering
+                        width: 70
+                    }
+
+                    Slider {
+                        id: clearanceSlider
+                        width: 120
+                        from: 0.1
+                        to: 0.5
+                        value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ConnectorClearance") : 0.2
+                        stepSize: 0.05
+
+                        onValueChanged: {
+                            if (UM.ActiveTool) {
+                                UM.ActiveTool.setProperty("ConnectorClearance", value)
+                            }
+                        }
+                    }
+
+                    Label {
+                        height: UM.Theme.getSize("setting_control").height
+                        text: clearanceSlider.value.toFixed(2) + " mm"
+                        font: UM.Theme.getFont("default")
+                        color: UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        renderType: Text.NativeRendering
+                        width: 50
+                    }
+                }
+            }
+        }
+
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
         // Instructions
         Label {
             width: parent.width

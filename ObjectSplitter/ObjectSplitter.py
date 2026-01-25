@@ -69,6 +69,13 @@ class ObjectSplitter(Tool):
         self._preview_node = None
         self._preview_size = 100.0  # Size of preview plane (will be adjusted to mesh)
 
+        # Connector settings
+        self._connector_enabled = True
+        self._connector_diameter = 4.0  # mm - diameter of peg/hole
+        self._connector_height = 3.0  # mm - how deep the peg/hole extends
+        self._connector_clearance = 0.2  # mm - extra space in hole for fit
+        self._connector_sides = 16  # Number of sides for cylinder approximation
+
         # Search settings for smallest cut
         self._search_resolution = 18  # Number of angles to search
 
@@ -85,7 +92,12 @@ class ObjectSplitter(Tool):
             "CutHeightPercent",
             "ShowPreview",
             "TrimeshAvailable",
-            "SearchResolution"
+            "SearchResolution",
+            # Connector properties
+            "ConnectorEnabled",
+            "ConnectorDiameter",
+            "ConnectorHeight",
+            "ConnectorClearance"
         )
 
         Logger.log("d", "Object Splitter Tool initialized (trimesh available: %s)", str(TRIMESH_AVAILABLE))
@@ -157,6 +169,43 @@ class ObjectSplitter(Tool):
     def setSearchResolution(self, value: int) -> None:
         if value != self._search_resolution:
             self._search_resolution = int(value)
+            self.propertyChanged.emit()
+
+    # Connector properties
+    def getConnectorEnabled(self) -> bool:
+        return self._connector_enabled
+
+    def setConnectorEnabled(self, value: bool) -> None:
+        if value != self._connector_enabled:
+            self._connector_enabled = value
+            Logger.log("d", "Connector enabled changed to: %s", str(value))
+            self.propertyChanged.emit()
+
+    def getConnectorDiameter(self) -> float:
+        return self._connector_diameter
+
+    def setConnectorDiameter(self, value: float) -> None:
+        if value != self._connector_diameter:
+            self._connector_diameter = float(value)
+            Logger.log("d", "Connector diameter changed to: %s", str(value))
+            self.propertyChanged.emit()
+
+    def getConnectorHeight(self) -> float:
+        return self._connector_height
+
+    def setConnectorHeight(self, value: float) -> None:
+        if value != self._connector_height:
+            self._connector_height = float(value)
+            Logger.log("d", "Connector height changed to: %s", str(value))
+            self.propertyChanged.emit()
+
+    def getConnectorClearance(self) -> float:
+        return self._connector_clearance
+
+    def setConnectorClearance(self, value: float) -> None:
+        if value != self._connector_clearance:
+            self._connector_clearance = float(value)
+            Logger.log("d", "Connector clearance changed to: %s", str(value))
             self.propertyChanged.emit()
 
     # ==========================================================================
@@ -479,6 +528,14 @@ class ObjectSplitter(Tool):
         Logger.log("i", "Cut successful: upper=%d verts, lower=%d verts",
                    len(mesh_upper.vertices), len(mesh_lower.vertices))
 
+        # Add connectors if enabled
+        if self._connector_enabled:
+            mesh_upper, mesh_lower = self._addConnectors(
+                mesh_upper, mesh_lower, plane_origin, plane_normal
+            )
+            Logger.log("i", "After connectors: upper=%d verts, lower=%d verts",
+                       len(mesh_upper.vertices), len(mesh_lower.vertices))
+
         # Create new scene nodes for both parts
         original_name = node.getName()
 
@@ -610,3 +667,251 @@ class ObjectSplitter(Tool):
         node.addDecorator(SliceableObjectDecorator())
 
         return node
+
+    # ==========================================================================
+    # Connector Logic
+    # ==========================================================================
+
+    def _getMeshVolume(self, mesh: "trimesh.Trimesh") -> float:
+        """Get the volume of a mesh. Uses convex hull if mesh is not watertight."""
+        try:
+            if mesh.is_watertight:
+                return abs(mesh.volume)
+            else:
+                return abs(mesh.convex_hull.volume)
+        except Exception:
+            # Fallback to bounding box volume
+            bounds = mesh.bounds
+            return numpy.prod(bounds[1] - bounds[0])
+
+    def _determinePegSide(self, mesh_a: "trimesh.Trimesh", mesh_b: "trimesh.Trimesh") -> Tuple[str, str]:
+        """
+        Determine which part gets the peg vs hole based on volume.
+        Peg goes on smaller part, hole on larger part.
+
+        Returns:
+            Tuple of ("peg", "hole") or ("hole", "peg") indicating what mesh_a and mesh_b get.
+        """
+        volume_a = self._getMeshVolume(mesh_a)
+        volume_b = self._getMeshVolume(mesh_b)
+
+        Logger.log("d", "Volume comparison: mesh_a=%.2f mm³, mesh_b=%.2f mm³", volume_a, volume_b)
+
+        if volume_a <= volume_b:
+            return ("peg", "hole")  # mesh_a gets peg, mesh_b gets hole
+        else:
+            return ("hole", "peg")  # mesh_a gets hole, mesh_b gets peg
+
+    def _findConnectorPosition(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
+                                plane_normal: numpy.ndarray) -> Optional[numpy.ndarray]:
+        """
+        Find a suitable position for the connector on the cut surface.
+        Returns the centroid of the cut surface if valid, None otherwise.
+        """
+        try:
+            # Get the cross-section at the cut plane
+            section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
+            if section is None:
+                Logger.log("w", "Could not get cross-section for connector placement")
+                return None
+
+            # Convert to 2D path and get centroid
+            path_2d, transform = section.to_planar()
+            if path_2d is None or len(path_2d.entities) == 0:
+                Logger.log("w", "Cross-section has no valid geometry")
+                return None
+
+            # Get centroid in 2D
+            centroid_2d = path_2d.centroid
+
+            # Transform back to 3D
+            # The transform is a 4x4 matrix that maps 3D to 2D
+            # We need to invert it to go from 2D back to 3D
+            centroid_3d_homogeneous = numpy.array([centroid_2d[0], centroid_2d[1], 0, 1])
+            transform_inv = numpy.linalg.inv(transform)
+            centroid_3d = (transform_inv @ centroid_3d_homogeneous)[:3]
+
+            # Verify the centroid is far enough from edges
+            # Check distance from centroid to nearest boundary
+            min_dist = self._connector_diameter / 2 + 1.0  # Need at least radius + 1mm margin
+
+            # For now, just use the centroid - more sophisticated edge checking could be added
+            Logger.log("d", "Connector position: %s", str(centroid_3d))
+
+            return centroid_3d
+
+        except Exception as e:
+            Logger.log("w", "Error finding connector position: %s", str(e))
+            return None
+
+    def _createPegMesh(self, position: numpy.ndarray, normal: numpy.ndarray,
+                       diameter: float, height: float) -> "trimesh.Trimesh":
+        """Create a cylinder mesh for the peg at the given position."""
+        radius = diameter / 2.0
+
+        # Create cylinder along Z axis, then transform
+        peg = trimesh.creation.cylinder(
+            radius=radius,
+            height=height,
+            sections=self._connector_sides
+        )
+
+        # The cylinder is centered at origin along Z
+        # We need to:
+        # 1. Move it so the base is at Z=0 (shift up by height/2)
+        # 2. Rotate to align with the plane normal
+        # 3. Translate to the connector position
+
+        # Shift so base is at origin
+        peg.apply_translation([0, 0, height / 2])
+
+        # Create rotation to align Z axis with the plane normal
+        z_axis = numpy.array([0, 0, 1])
+        normal_normalized = normal / numpy.linalg.norm(normal)
+
+        # Rotation matrix from Z to normal
+        rotation_matrix = self._rotationMatrixFromVectors(z_axis, normal_normalized)
+        transform = numpy.eye(4)
+        transform[:3, :3] = rotation_matrix
+        peg.apply_transform(transform)
+
+        # Translate to position
+        peg.apply_translation(position)
+
+        Logger.log("d", "Created peg: diameter=%.2f, height=%.2f, position=%s",
+                   diameter, height, str(position))
+
+        return peg
+
+    def _createHoleMesh(self, position: numpy.ndarray, normal: numpy.ndarray,
+                        diameter: float, height: float, clearance: float) -> "trimesh.Trimesh":
+        """Create a cylinder mesh for the hole (to be subtracted) at the given position."""
+        # Hole is slightly larger than peg for clearance
+        radius = diameter / 2.0 + clearance
+        # Hole is slightly deeper to ensure clean subtraction
+        hole_height = height + 0.2
+
+        hole = trimesh.creation.cylinder(
+            radius=radius,
+            height=hole_height,
+            sections=self._connector_sides
+        )
+
+        # Shift so the top of the cylinder is at Z=0 (hole goes into the part)
+        hole.apply_translation([0, 0, -hole_height / 2])
+
+        # Create rotation to align Z axis with the negative plane normal (hole goes in)
+        z_axis = numpy.array([0, 0, 1])
+        normal_normalized = normal / numpy.linalg.norm(normal)
+
+        rotation_matrix = self._rotationMatrixFromVectors(z_axis, -normal_normalized)
+        transform = numpy.eye(4)
+        transform[:3, :3] = rotation_matrix
+        hole.apply_transform(transform)
+
+        # Translate to position
+        hole.apply_translation(position)
+
+        Logger.log("d", "Created hole: diameter=%.2f (with clearance=%.2f), height=%.2f, position=%s",
+                   diameter + clearance * 2, clearance, hole_height, str(position))
+
+        return hole
+
+    def _rotationMatrixFromVectors(self, vec1: numpy.ndarray, vec2: numpy.ndarray) -> numpy.ndarray:
+        """
+        Create a rotation matrix that rotates vec1 to vec2.
+        Uses Rodrigues' rotation formula.
+        """
+        vec1 = vec1 / numpy.linalg.norm(vec1)
+        vec2 = vec2 / numpy.linalg.norm(vec2)
+
+        # Check if vectors are parallel
+        cross = numpy.cross(vec1, vec2)
+        dot = numpy.dot(vec1, vec2)
+
+        if numpy.linalg.norm(cross) < 1e-6:
+            if dot > 0:
+                # Same direction, identity rotation
+                return numpy.eye(3)
+            else:
+                # Opposite direction, 180 degree rotation
+                # Find a perpendicular vector
+                if abs(vec1[0]) < 0.9:
+                    perp = numpy.array([1, 0, 0])
+                else:
+                    perp = numpy.array([0, 1, 0])
+                perp = perp - numpy.dot(perp, vec1) * vec1
+                perp = perp / numpy.linalg.norm(perp)
+                # Rodrigues for 180 degree rotation around perp
+                return 2 * numpy.outer(perp, perp) - numpy.eye(3)
+
+        # Rodrigues' formula
+        cross_normalized = cross / numpy.linalg.norm(cross)
+        angle = numpy.arccos(numpy.clip(dot, -1, 1))
+
+        K = numpy.array([
+            [0, -cross_normalized[2], cross_normalized[1]],
+            [cross_normalized[2], 0, -cross_normalized[0]],
+            [-cross_normalized[1], cross_normalized[0], 0]
+        ])
+
+        R = numpy.eye(3) + numpy.sin(angle) * K + (1 - numpy.cos(angle)) * (K @ K)
+        return R
+
+    def _addConnectors(self, mesh_upper: "trimesh.Trimesh", mesh_lower: "trimesh.Trimesh",
+                       plane_origin: numpy.ndarray, plane_normal: numpy.ndarray) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh"]:
+        """
+        Add peg to smaller part and hole to larger part.
+        Returns the modified meshes.
+        """
+        if not self._connector_enabled:
+            return mesh_upper, mesh_lower
+
+        # Determine which part gets peg vs hole
+        upper_role, lower_role = self._determinePegSide(mesh_upper, mesh_lower)
+
+        # Find connector position on the cut surface
+        # Use the original mesh (upper) for finding position since both share the cut surface
+        connector_pos = self._findConnectorPosition(mesh_upper, plane_origin, plane_normal)
+
+        if connector_pos is None:
+            Logger.log("w", "Could not find valid connector position, skipping connectors")
+            return mesh_upper, mesh_lower
+
+        # Create peg and hole meshes
+        peg = self._createPegMesh(
+            connector_pos, plane_normal,
+            self._connector_diameter, self._connector_height
+        )
+
+        hole = self._createHoleMesh(
+            connector_pos, plane_normal,
+            self._connector_diameter, self._connector_height, self._connector_clearance
+        )
+
+        # Apply to the appropriate meshes
+        try:
+            if upper_role == "peg":
+                # Upper gets peg (union), lower gets hole (difference)
+                mesh_upper_result = trimesh.boolean.union([mesh_upper, peg])
+                mesh_lower_result = trimesh.boolean.difference([mesh_lower, hole])
+                Logger.log("i", "Added peg to upper part, hole to lower part")
+            else:
+                # Upper gets hole (difference), lower gets peg (union)
+                mesh_upper_result = trimesh.boolean.difference([mesh_upper, hole])
+                mesh_lower_result = trimesh.boolean.union([mesh_lower, peg])
+                Logger.log("i", "Added hole to upper part, peg to lower part")
+
+            # Verify results are valid
+            if mesh_upper_result is None or len(mesh_upper_result.vertices) == 0:
+                Logger.log("w", "Upper mesh invalid after connector operation, using original")
+                mesh_upper_result = mesh_upper
+            if mesh_lower_result is None or len(mesh_lower_result.vertices) == 0:
+                Logger.log("w", "Lower mesh invalid after connector operation, using original")
+                mesh_lower_result = mesh_lower
+
+            return mesh_upper_result, mesh_lower_result
+
+        except Exception as e:
+            Logger.log("e", "Error adding connectors: %s. Using meshes without connectors.", str(e))
+            return mesh_upper, mesh_lower
