@@ -1,0 +1,250 @@
+// Copyright (c) 2024 Emanuel Lönnberg.
+// This tool is released under the terms of the LGPLv3 or higher.
+
+import QtQuick 6.0
+import QtQuick.Controls 6.0
+import QtQuick.Layouts 6.0
+
+import UM 1.6 as UM
+import Cura 1.0 as Cura
+
+Item {
+    id: base
+    width: childrenRect.width
+    height: childrenRect.height
+
+    UM.I18nCatalog { id: catalog; name: "objectsplitter" }
+
+    Component.onCompleted: {
+        console.log("Object Splitter QML loaded")
+        if (UM.ActiveTool) {
+            console.log("Tool active, trimesh available:", UM.ActiveTool.properties.getValue("TrimeshAvailable"))
+        }
+    }
+
+    Column {
+        id: mainColumn
+        spacing: UM.Theme.getSize("default_margin").height
+        width: 250
+
+        // Title
+        Label {
+            text: catalog.i18nc("@label", "Object Splitter")
+            font: UM.Theme.getFont("medium_bold")
+            color: UM.Theme.getColor("text")
+            renderType: Text.NativeRendering
+        }
+
+        // Warning if trimesh not available
+        Rectangle {
+            width: parent.width
+            height: warningText.height + UM.Theme.getSize("default_margin").height
+            color: "#FFEEEE"
+            border.color: "#FF6666"
+            border.width: 1
+            radius: 4
+            visible: UM.ActiveTool && !UM.ActiveTool.properties.getValue("TrimeshAvailable")
+
+            Label {
+                id: warningText
+                anchors.centerIn: parent
+                width: parent.width - UM.Theme.getSize("default_margin").width
+                text: catalog.i18nc("@label", "trimesh library not installed.\nInstall with: pip install trimesh")
+                font: UM.Theme.getFont("default")
+                color: "#CC0000"
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                renderType: Text.NativeRendering
+            }
+        }
+
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // Cut Mode Selection
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Cut Mode:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                width: 70
+            }
+
+            ComboBox {
+                id: cutModeComboBox
+                width: 170
+                height: UM.Theme.getSize("setting_control").height
+                model: ["Horizontal", "Vertical", "Smallest Section"]
+                currentIndex: {
+                    if (UM.ActiveTool) {
+                        var mode = UM.ActiveTool.properties.getValue("CutMode")
+                        if (mode === "horizontal") return 0
+                        if (mode === "vertical") return 1
+                        if (mode === "smallest") return 2
+                    }
+                    return 0
+                }
+                onActivated: {
+                    if (UM.ActiveTool) {
+                        var modeMap = ["horizontal", "vertical", "smallest"]
+                        UM.ActiveTool.setProperty("CutMode", modeMap[currentIndex])
+                    }
+                }
+            }
+        }
+
+        // Cut Mode Description
+        Label {
+            width: parent.width
+            text: {
+                if (UM.ActiveTool) {
+                    var mode = UM.ActiveTool.properties.getValue("CutMode")
+                    if (mode === "horizontal") return "Cut parallel to the build plate"
+                    if (mode === "vertical") return "Cut perpendicular to the build plate"
+                    if (mode === "smallest") return "Find smallest cross-section at click point"
+                }
+                return ""
+            }
+            font: UM.Theme.getFont("default_italic")
+            color: UM.Theme.getColor("text_inactive")
+            wrapMode: Text.WordWrap
+            renderType: Text.NativeRendering
+        }
+
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // Cut Height (for horizontal mode)
+        Column {
+            width: parent.width
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("CutMode") === "horizontal"
+
+            Label {
+                text: catalog.i18nc("@label", "Cut Height:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Slider {
+                    id: heightSlider
+                    width: 170
+                    from: 0
+                    to: 100
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("CutHeightPercent") : 50
+                    stepSize: 1
+
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("CutHeightPercent", value)
+                        }
+                    }
+                }
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: Math.round(heightSlider.value) + "%"
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 40
+                }
+            }
+        }
+
+        // Search Resolution (for smallest mode)
+        Column {
+            width: parent.width
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("CutMode") === "smallest"
+
+            Label {
+                text: catalog.i18nc("@label", "Search Resolution:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Slider {
+                    id: resolutionSlider
+                    width: 170
+                    from: 6
+                    to: 36
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SearchResolution") : 18
+                    stepSize: 1
+
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("SearchResolution", Math.round(value))
+                        }
+                    }
+                }
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: Math.round(resolutionSlider.value).toString()
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 30
+                }
+            }
+
+            Label {
+                width: parent.width
+                text: "Higher = more accurate but slower"
+                font: UM.Theme.getFont("default_italic")
+                color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+        }
+
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // Instructions
+        Label {
+            width: parent.width
+            text: catalog.i18nc("@label", "Click on an object to split it at that location.")
+            font: UM.Theme.getFont("default")
+            color: UM.Theme.getColor("text")
+            wrapMode: Text.WordWrap
+            renderType: Text.NativeRendering
+        }
+
+        Label {
+            width: parent.width
+            text: catalog.i18nc("@label", "Ctrl+Click to switch to Move tool.")
+            font: UM.Theme.getFont("default_italic")
+            color: UM.Theme.getColor("text_inactive")
+            wrapMode: Text.WordWrap
+            renderType: Text.NativeRendering
+        }
+    }
+}
