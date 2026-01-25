@@ -13,8 +13,9 @@
 ## Phase 1: Core Improvements
 
 ### 1.1 Cut Plane Preview
-- [ ] Show translucent plane mesh at cut location before committing
-- [ ] Update preview on mouse move (hover over object)
+- [x] Show translucent plane mesh at cut location before committing
+- [x] Update preview on mouse move (hover over object)
+- [x] Toggle preview on/off in UI
 - [ ] Different colors for valid/invalid cuts
 - [ ] Preview both resulting parts with slight separation
 

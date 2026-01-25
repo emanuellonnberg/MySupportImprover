@@ -228,6 +228,43 @@ Item {
             color: UM.Theme.getColor("lining")
         }
 
+        // Preview Toggle
+        Row {
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            CheckBox {
+                id: previewCheckBox
+                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ShowPreview") : true
+
+                onCheckedChanged: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.setProperty("ShowPreview", checked)
+                    }
+                }
+            }
+
+            Label {
+                height: previewCheckBox.height
+                text: catalog.i18nc("@label", "Show cut plane preview")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: previewCheckBox.checked = !previewCheckBox.checked
+                }
+            }
+        }
+
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
         // Instructions
         Label {
             width: parent.width

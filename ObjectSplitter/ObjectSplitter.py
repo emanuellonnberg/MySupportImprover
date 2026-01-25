@@ -7,10 +7,13 @@ from PyQt6.QtWidgets import QApplication
 from UM.Logger import Logger
 from UM.Application import Application
 from UM.Math.Vector import Vector
+from UM.Math.Matrix import Matrix
 from UM.Tool import Tool
 from UM.Event import Event, MouseEvent
 from UM.Mesh.MeshBuilder import MeshBuilder
 from UM.Scene.Selection import Selection
+from UM.Scene.SceneNode import SceneNode
+from UM.View.GL.OpenGL import OpenGL
 
 from cura.CuraApplication import CuraApplication
 from cura.Scene.CuraSceneNode import CuraSceneNode
@@ -25,6 +28,7 @@ from cura.Scene.SliceableObjectDecorator import SliceableObjectDecorator
 from cura.Scene.BuildPlateDecorator import BuildPlateDecorator
 
 import numpy
+import math
 from typing import Optional, Tuple, List
 
 # Try to import trimesh - it's optional but required for cutting
@@ -63,6 +67,7 @@ class ObjectSplitter(Tool):
         # Preview settings
         self._show_preview = True
         self._preview_node = None
+        self._preview_size = 100.0  # Size of preview plane (will be adjusted to mesh)
 
         # Search settings for smallest cut
         self._search_resolution = 18  # Number of angles to search
@@ -71,6 +76,8 @@ class ObjectSplitter(Tool):
         self._selection_pass = None
         self._last_picked_node = None
         self._last_picked_position = None
+        self._hover_node = None  # Node currently being hovered over
+        self._picking_pass = None  # Cached picking pass
 
         self.setExposedProperties(
             "CutMode",
@@ -137,6 +144,8 @@ class ObjectSplitter(Tool):
     def setShowPreview(self, value: bool) -> None:
         if value != self._show_preview:
             self._show_preview = value
+            if not value:
+                self._removePreview()
             self.propertyChanged.emit()
 
     def getTrimeshAvailable(self) -> bool:
@@ -159,6 +168,11 @@ class ObjectSplitter(Tool):
         modifiers = QApplication.keyboardModifiers()
         ctrl_is_active = modifiers & Qt.KeyboardModifier.ControlModifier
 
+        # Handle mouse move for preview
+        if event.type == Event.MouseMoveEvent and self._show_preview:
+            self._updatePreview(event.x, event.y)
+            return
+
         if event.type == Event.MousePressEvent and MouseEvent.LeftButton in event.buttons and self._controller.getToolsEnabled():
             if ctrl_is_active:
                 self._controller.setActiveTool("TranslateTool")
@@ -167,6 +181,9 @@ class ObjectSplitter(Tool):
             if not TRIMESH_AVAILABLE:
                 Logger.log("e", "Cannot split: trimesh library not available. Install with: pip install trimesh")
                 return
+
+            # Hide preview before cutting
+            self._removePreview()
 
             # Get the object under the mouse
             if self._selection_pass is None:
@@ -204,6 +221,195 @@ class ObjectSplitter(Tool):
 
             # Perform the cut
             self._performCut(picked_node, picked_position)
+
+    def setEnabled(self, enable: bool) -> None:
+        """Called when the tool is enabled/disabled."""
+        super().setEnabled(enable)
+        if not enable:
+            self._removePreview()
+
+    # ==========================================================================
+    # Preview Handling
+    # ==========================================================================
+
+    def _updatePreview(self, mouse_x: float, mouse_y: float):
+        """Update the preview plane based on mouse position."""
+        if not self._show_preview:
+            self._removePreview()
+            return
+
+        # Get the object under the mouse
+        if self._selection_pass is None:
+            self._selection_pass = Application.getInstance().getRenderer().getRenderPass("selection")
+
+        picked_node = self._controller.getScene().findObject(
+            self._selection_pass.getIdAtPosition(mouse_x, mouse_y)
+        )
+
+        # Don't show preview on preview node itself
+        if picked_node == self._preview_node:
+            return
+
+        if not picked_node:
+            self._removePreview()
+            return
+
+        # Check if it's a regular mesh (not a modifier volume)
+        node_stack = picked_node.callDecoration("getStack")
+        if node_stack:
+            if (node_stack.getProperty("support_mesh", "value") or
+                node_stack.getProperty("anti_overhang_mesh", "value") or
+                node_stack.getProperty("infill_mesh", "value") or
+                node_stack.getProperty("cutting_mesh", "value")):
+                self._removePreview()
+                return
+
+        # Get 3D position under mouse
+        active_camera = self._controller.getScene().getActiveCamera()
+        if self._picking_pass is None:
+            self._picking_pass = PickingPass(active_camera.getViewportWidth(), active_camera.getViewportHeight())
+        self._picking_pass.render()
+        picked_position = self._picking_pass.getPickedPosition(mouse_x, mouse_y)
+
+        if picked_position is None:
+            self._removePreview()
+            return
+
+        # Get mesh data for plane calculation
+        mesh_data = picked_node.getMeshData()
+        if mesh_data is None:
+            self._removePreview()
+            return
+
+        # Calculate plane parameters based on cut mode
+        transformed_mesh = mesh_data.getTransformed(picked_node.getWorldTransformation())
+        vertices = transformed_mesh.getVertices()
+
+        # Get bounding box for plane size
+        min_bounds = vertices.min(axis=0)
+        max_bounds = vertices.max(axis=0)
+        mesh_size = max_bounds - min_bounds
+        plane_size = max(mesh_size[0], mesh_size[2]) * 1.2  # 20% larger than mesh
+
+        # Determine plane normal and origin based on mode
+        if self._cut_mode == self.CUT_MODE_HORIZONTAL:
+            min_y = min_bounds[1]
+            max_y = max_bounds[1]
+            height = max_y - min_y
+            cut_y = min_y + (height * self._cut_height_percent / 100.0)
+            plane_origin = Vector(0, cut_y, 0)
+            plane_normal = Vector(0, 1, 0)
+        elif self._cut_mode == self.CUT_MODE_VERTICAL:
+            plane_origin = picked_position
+            plane_normal = Vector(1, 0, 0)  # Cut along X axis
+        elif self._cut_mode == self.CUT_MODE_SMALLEST:
+            # For smallest mode, just show horizontal plane at click position as hint
+            # The actual smallest cut is computed on click
+            plane_origin = picked_position
+            plane_normal = Vector(0, 1, 0)
+        else:
+            plane_origin = picked_position
+            plane_normal = Vector(0, 1, 0)
+
+        # Create or update preview
+        self._createOrUpdatePreview(plane_origin, plane_normal, plane_size)
+        self._hover_node = picked_node
+
+    def _createOrUpdatePreview(self, origin: Vector, normal: Vector, size: float):
+        """Create or update the preview plane mesh."""
+        if self._preview_node is None:
+            self._preview_node = self._createPreviewNode()
+
+        # Update preview mesh geometry
+        mesh_builder = self._createPlaneMesh(origin, normal, size)
+        mesh_data = mesh_builder.build()
+        self._preview_node.setMeshData(mesh_data)
+
+        # Make sure it's in the scene
+        scene_root = self._controller.getScene().getRoot()
+        if self._preview_node.getParent() != scene_root:
+            self._preview_node.setParent(scene_root)
+
+    def _createPreviewNode(self) -> SceneNode:
+        """Create a new preview node (non-selectable, non-sliceable)."""
+        node = SceneNode()
+        node.setName("ObjectSplitter_Preview")
+        node.setSelectable(False)
+        node.setCalculateBoundingBox(False)
+
+        # Set rendering to be translucent
+        # Note: The actual transparency depends on Cura's rendering pipeline
+        # We'll use a special mesh type or shader if available
+
+        return node
+
+    def _createPlaneMesh(self, origin: Vector, normal: Vector, size: float) -> MeshBuilder:
+        """Create a flat plane mesh at the given position and orientation."""
+        mesh = MeshBuilder()
+
+        # Normalize the normal vector
+        normal_arr = numpy.array([normal.x, normal.y, normal.z])
+        normal_arr = normal_arr / numpy.linalg.norm(normal_arr)
+
+        # Find two perpendicular vectors to the normal
+        if abs(normal_arr[1]) < 0.9:
+            up = numpy.array([0, 1, 0])
+        else:
+            up = numpy.array([1, 0, 0])
+
+        tangent1 = numpy.cross(normal_arr, up)
+        tangent1 = tangent1 / numpy.linalg.norm(tangent1)
+        tangent2 = numpy.cross(normal_arr, tangent1)
+
+        # Scale by half size
+        half_size = size / 2.0
+        t1 = tangent1 * half_size
+        t2 = tangent2 * half_size
+
+        # Create 4 corners of the plane
+        center = numpy.array([origin.x, origin.y, origin.z])
+        corners = [
+            center - t1 - t2,  # Bottom-left
+            center + t1 - t2,  # Bottom-right
+            center + t1 + t2,  # Top-right
+            center - t1 + t2,  # Top-left
+        ]
+
+        # Create vertices (we need 6 for 2 triangles, but we'll use indexed)
+        vertices = numpy.array(corners, dtype=numpy.float32)
+
+        # Create indices for 2 triangles (both sides for visibility)
+        indices = numpy.array([
+            [0, 1, 2],  # Front face triangle 1
+            [0, 2, 3],  # Front face triangle 2
+            [0, 2, 1],  # Back face triangle 1
+            [0, 3, 2],  # Back face triangle 2
+        ], dtype=numpy.int32)
+
+        mesh.setVertices(vertices)
+        mesh.setIndices(indices)
+
+        # Set a distinct color for the preview (orange/red for visibility)
+        # Colors are RGBA per vertex
+        colors = numpy.array([
+            [1.0, 0.3, 0.0, 0.5],  # Orange, semi-transparent
+            [1.0, 0.3, 0.0, 0.5],
+            [1.0, 0.3, 0.0, 0.5],
+            [1.0, 0.3, 0.0, 0.5],
+        ], dtype=numpy.float32)
+        mesh.setColors(colors)
+
+        mesh.calculateNormals()
+
+        return mesh
+
+    def _removePreview(self):
+        """Remove the preview plane from the scene."""
+        if self._preview_node is not None:
+            if self._preview_node.getParent() is not None:
+                self._preview_node.setParent(None)
+            self._preview_node = None
+        self._hover_node = None
 
     # ==========================================================================
     # Cutting Logic
