@@ -1202,45 +1202,33 @@ class ObjectSplitter(Tool):
             self._connector_diameter, self._connector_height, self._connector_clearance
         )
 
-        mesh_upper_result = mesh_upper
-        mesh_lower_result = mesh_lower
-
         # Apply to the appropriate meshes
+        # Try hole first - if it fails, skip both peg and hole (peg without hole is useless)
         try:
             if upper_role == "peg":
-                # Upper gets peg (concatenate - peg sits on surface without overlap)
-                mesh_upper_result = trimesh.util.concatenate([mesh_upper, peg])
-                Logger.log("i", "Added peg to upper part via concatenation")
-
-                # Lower gets hole (boolean difference)
-                mesh_lower_result = self._tryBooleanDifference(mesh_lower, hole)
-                if mesh_lower_result is not None:
+                # Lower gets hole (boolean difference) - try this first
+                mesh_lower_with_hole = self._tryBooleanDifference(mesh_lower, hole)
+                if mesh_lower_with_hole is not None and len(mesh_lower_with_hole.vertices) > 0:
                     Logger.log("i", "Added hole to lower part via boolean difference")
+                    # Hole succeeded, now add the peg to upper
+                    mesh_upper_result = trimesh.util.concatenate([mesh_upper, peg])
+                    Logger.log("i", "Added peg to upper part via concatenation")
+                    return mesh_upper_result, mesh_lower_with_hole
                 else:
-                    Logger.log("w", "Could not create hole in lower part, using original mesh")
-                    mesh_lower_result = mesh_lower
+                    Logger.log("w", "Could not create hole - skipping connectors entirely")
+                    return mesh_upper, mesh_lower
             else:
-                # Lower gets peg (concatenate)
-                mesh_lower_result = trimesh.util.concatenate([mesh_lower, peg])
-                Logger.log("i", "Added peg to lower part via concatenation")
-
-                # Upper gets hole (boolean difference)
-                mesh_upper_result = self._tryBooleanDifference(mesh_upper, hole)
-                if mesh_upper_result is not None:
+                # Upper gets hole (boolean difference) - try this first
+                mesh_upper_with_hole = self._tryBooleanDifference(mesh_upper, hole)
+                if mesh_upper_with_hole is not None and len(mesh_upper_with_hole.vertices) > 0:
                     Logger.log("i", "Added hole to upper part via boolean difference")
+                    # Hole succeeded, now add the peg to lower
+                    mesh_lower_result = trimesh.util.concatenate([mesh_lower, peg])
+                    Logger.log("i", "Added peg to lower part via concatenation")
+                    return mesh_upper_with_hole, mesh_lower_result
                 else:
-                    Logger.log("w", "Could not create hole in upper part, using original mesh")
-                    mesh_upper_result = mesh_upper
-
-            # Verify results are valid
-            if mesh_upper_result is None or len(mesh_upper_result.vertices) == 0:
-                Logger.log("w", "Upper mesh invalid after connector operation, using original")
-                mesh_upper_result = mesh_upper
-            if mesh_lower_result is None or len(mesh_lower_result.vertices) == 0:
-                Logger.log("w", "Lower mesh invalid after connector operation, using original")
-                mesh_lower_result = mesh_lower
-
-            return mesh_upper_result, mesh_lower_result
+                    Logger.log("w", "Could not create hole - skipping connectors entirely")
+                    return mesh_upper, mesh_lower
 
         except Exception as e:
             Logger.log("e", "Error adding connectors: %s. Using meshes without connectors.", str(e))
