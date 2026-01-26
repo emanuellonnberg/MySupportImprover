@@ -2,7 +2,7 @@
 # This tool is released under the terms of the LGPLv3 or higher.
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QProgressDialog
 
 from UM.Logger import Logger
 from UM.Application import Application
@@ -82,6 +82,7 @@ class ObjectSplitter(Tool):
         self._last_picked_position = None
         self._hover_node = None  # Node currently being hovered over
         self._picking_pass = None  # Cached picking pass
+        self._progress_dialog = None  # Progress dialog for long operations
 
         self.setExposedProperties(
             "CutMode",
@@ -115,6 +116,56 @@ class ObjectSplitter(Tool):
     def _onSelectionChanged(self):
         """Handle selection changes."""
         pass  # Could update preview here
+
+    # ==========================================================================
+    # Progress Dialog
+    # ==========================================================================
+
+    def _showProgress(self, title: str, message: str, minimum: int = 0, maximum: int = 100) -> QProgressDialog:
+        """Show a progress dialog for long operations."""
+        app = QApplication.instance()
+        if app is None:
+            return None
+
+        dialog = self._progress_dialog
+        if dialog is None:
+            dialog = QProgressDialog(message, None, minimum, maximum)
+            dialog.setWindowTitle(title)
+            dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            dialog.setCancelButton(None)  # No cancel button
+            dialog.setMinimumDuration(0)  # Show immediately
+            dialog.setAutoClose(False)
+            dialog.setAutoReset(False)
+            dialog.setValue(minimum)
+            self._progress_dialog = dialog
+        else:
+            dialog.setLabelText(message)
+            dialog.setRange(minimum, maximum)
+            dialog.setWindowTitle(title)
+            dialog.setValue(minimum)
+
+        dialog.show()
+        QApplication.processEvents()
+        return dialog
+
+    def _updateProgress(self, message: str, value: int = None) -> None:
+        """Update the progress dialog."""
+        dialog = self._progress_dialog
+        if dialog is None:
+            return
+        if message:
+            dialog.setLabelText(message)
+        if value is not None:
+            dialog.setValue(value)
+        QApplication.processEvents()
+
+    def _closeProgress(self) -> None:
+        """Close the progress dialog."""
+        dialog = self._progress_dialog
+        if dialog is None:
+            return
+        dialog.close()
+        self._progress_dialog = None
 
     # ==========================================================================
     # Properties for QML
@@ -464,96 +515,118 @@ class ObjectSplitter(Tool):
     def _performCut(self, node: CuraSceneNode, click_position: Vector):
         """Perform the cut operation on the given node."""
 
-        mesh_data = node.getMeshData()
-        if mesh_data is None:
-            Logger.log("e", "Node has no mesh data")
-            return
+        # Show progress dialog
+        self._showProgress("Object Splitter", "Preparing mesh...", 0, 100)
 
-        # Get mesh in world coordinates
-        transformed_mesh = mesh_data.getTransformed(node.getWorldTransformation())
-        vertices = transformed_mesh.getVertices()
-        indices = transformed_mesh.getIndices()
+        try:
+            mesh_data = node.getMeshData()
+            if mesh_data is None:
+                Logger.log("e", "Node has no mesh data")
+                self._closeProgress()
+                return
 
-        if indices is None:
-            # Non-indexed mesh - create indices
-            indices = numpy.arange(len(vertices)).reshape(-1, 3).astype(numpy.int32)
+            # Get mesh in world coordinates
+            self._updateProgress("Loading mesh data...", 10)
+            transformed_mesh = mesh_data.getTransformed(node.getWorldTransformation())
+            vertices = transformed_mesh.getVertices()
+            indices = transformed_mesh.getIndices()
 
-        # Convert to trimesh
-        tm = trimesh.Trimesh(vertices=vertices, faces=indices)
+            if indices is None:
+                # Non-indexed mesh - create indices
+                indices = numpy.arange(len(vertices)).reshape(-1, 3).astype(numpy.int32)
 
-        # Determine cut plane based on mode
-        if self._cut_mode == self.CUT_MODE_HORIZONTAL:
-            plane_normal, plane_origin = self._getHorizontalCutPlane(tm, click_position)
-        elif self._cut_mode == self.CUT_MODE_VERTICAL:
-            plane_normal, plane_origin = self._getVerticalCutPlane(tm, click_position)
-        elif self._cut_mode == self.CUT_MODE_SMALLEST:
-            plane_normal, plane_origin = self._findSmallestCutPlane(tm, click_position)
-        else:
-            plane_normal, plane_origin = self._getHorizontalCutPlane(tm, click_position)
+            # Convert to trimesh
+            tm = trimesh.Trimesh(vertices=vertices, faces=indices)
 
-        Logger.log("d", "Cut plane: origin=%s, normal=%s", str(plane_origin), str(plane_normal))
+            # Determine cut plane based on mode
+            self._updateProgress("Calculating cut plane...", 20)
+            if self._cut_mode == self.CUT_MODE_HORIZONTAL:
+                plane_normal, plane_origin = self._getHorizontalCutPlane(tm, click_position)
+            elif self._cut_mode == self.CUT_MODE_VERTICAL:
+                plane_normal, plane_origin = self._getVerticalCutPlane(tm, click_position)
+            elif self._cut_mode == self.CUT_MODE_SMALLEST:
+                self._updateProgress("Searching for smallest cross-section...", 20)
+                plane_normal, plane_origin = self._findSmallestCutPlane(tm, click_position)
+            else:
+                plane_normal, plane_origin = self._getHorizontalCutPlane(tm, click_position)
 
-        # Perform the cut - try with capping first, fallback to no cap
-        mesh_upper, mesh_lower, capped = self._sliceMeshWithFallback(tm, plane_origin, plane_normal)
+            Logger.log("d", "Cut plane: origin=%s, normal=%s", str(plane_origin), str(plane_normal))
 
-        if mesh_upper is None or mesh_lower is None:
-            Logger.log("e", "Cut operation failed")
-            return
+            # Perform the cut - try with capping first, fallback to no cap
+            self._updateProgress("Splitting mesh...", 40)
+            mesh_upper, mesh_lower, capped = self._sliceMeshWithFallback(tm, plane_origin, plane_normal)
 
-        # Check if we got valid meshes
-        if len(mesh_upper.vertices) == 0:
-            Logger.log("w", "Upper mesh is empty after cut")
-            return
-        if len(mesh_lower.vertices) == 0:
-            Logger.log("w", "Lower mesh is empty after cut")
-            return
+            if mesh_upper is None or mesh_lower is None:
+                Logger.log("e", "Cut operation failed")
+                self._closeProgress()
+                return
 
-        Logger.log("i", "Cut successful: upper=%d verts, lower=%d verts, capped=%s",
-                   len(mesh_upper.vertices), len(mesh_lower.vertices), str(capped))
+            # Check if we got valid meshes
+            if len(mesh_upper.vertices) == 0:
+                Logger.log("w", "Upper mesh is empty after cut")
+                self._closeProgress()
+                return
+            if len(mesh_lower.vertices) == 0:
+                Logger.log("w", "Lower mesh is empty after cut")
+                self._closeProgress()
+                return
 
-        # Add connectors if enabled (only if mesh was capped properly)
-        if self._connector_enabled and capped:
-            mesh_upper, mesh_lower = self._addConnectors(
-                mesh_upper, mesh_lower, plane_origin, plane_normal
+            Logger.log("i", "Cut successful: upper=%d verts, lower=%d verts, capped=%s",
+                       len(mesh_upper.vertices), len(mesh_lower.vertices), str(capped))
+
+            # Add connectors if enabled (only if mesh was capped properly)
+            if self._connector_enabled and capped:
+                self._updateProgress("Adding connectors...", 60)
+                mesh_upper, mesh_lower = self._addConnectors(
+                    mesh_upper, mesh_lower, plane_origin, plane_normal
+                )
+                Logger.log("i", "After connectors: upper=%d verts, lower=%d verts",
+                           len(mesh_upper.vertices), len(mesh_lower.vertices))
+            elif self._connector_enabled and not capped:
+                Logger.log("w", "Skipping connectors - mesh was not capped (open edges)")
+
+            self._updateProgress("Creating new objects...", 80)
+
+            # Create new scene nodes for both parts
+            original_name = node.getName()
+
+            op = GroupedOperation()
+
+            # Create upper part
+            node_upper = self._createMeshNode(
+                mesh_upper.vertices,
+                mesh_upper.faces,
+                f"{original_name}_part1"
             )
-            Logger.log("i", "After connectors: upper=%d verts, lower=%d verts",
-                       len(mesh_upper.vertices), len(mesh_lower.vertices))
-        elif self._connector_enabled and not capped:
-            Logger.log("w", "Skipping connectors - mesh was not capped (open edges)")
 
-        # Create new scene nodes for both parts
-        original_name = node.getName()
+            # Create lower part
+            node_lower = self._createMeshNode(
+                mesh_lower.vertices,
+                mesh_lower.faces,
+                f"{original_name}_part2"
+            )
 
-        op = GroupedOperation()
+            # Add new nodes and remove original
+            self._updateProgress("Finalizing...", 90)
+            scene_root = self._controller.getScene().getRoot()
 
-        # Create upper part
-        node_upper = self._createMeshNode(
-            mesh_upper.vertices,
-            mesh_upper.faces,
-            f"{original_name}_part1"
-        )
+            op.addOperation(AddSceneNodeOperation(node_upper, scene_root))
+            op.addOperation(AddSceneNodeOperation(node_lower, scene_root))
+            op.addOperation(RemoveSceneNodeOperation(node))
 
-        # Create lower part
-        node_lower = self._createMeshNode(
-            mesh_lower.vertices,
-            mesh_lower.faces,
-            f"{original_name}_part2"
-        )
+            op.push()
 
-        # Add new nodes and remove original
-        scene_root = self._controller.getScene().getRoot()
+            # Emit scene changed
+            CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node_upper)
 
-        op.addOperation(AddSceneNodeOperation(node_upper, scene_root))
-        op.addOperation(AddSceneNodeOperation(node_lower, scene_root))
-        op.addOperation(RemoveSceneNodeOperation(node))
+            self._updateProgress("Done!", 100)
+            Logger.log("i", "Split complete: created '%s' and '%s'",
+                       node_upper.getName(), node_lower.getName())
 
-        op.push()
-
-        # Emit scene changed
-        CuraApplication.getInstance().getController().getScene().sceneChanged.emit(node_upper)
-
-        Logger.log("i", "Split complete: created '%s' and '%s'",
-                   node_upper.getName(), node_lower.getName())
+        except Exception as e:
+            Logger.log("e", "Error during cut operation: %s", str(e))
+        finally:
+            self._closeProgress()
 
     def _sliceMeshWithFallback(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
                                 plane_normal: numpy.ndarray) -> Tuple[Optional["trimesh.Trimesh"], Optional["trimesh.Trimesh"], bool]:
