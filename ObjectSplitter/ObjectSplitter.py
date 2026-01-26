@@ -661,17 +661,17 @@ class ObjectSplitter(Tool):
                 return mesh_upper, mesh_lower, capped
         except ImportError as e:
             # rtree not available
-            Logger.log("w", "Capping requires 'rtree' library: %s. Trying without capping.", str(e))
+            Logger.log("w", "Capping requires 'rtree' library: %s. Trying manual capping.", str(e))
         except Exception as e:
             error_msg = str(e).lower()
             if "watertight" in error_msg:
-                Logger.log("w", "Mesh is not watertight, cannot cap. Trying without capping.")
+                Logger.log("w", "Mesh is not watertight, cannot use built-in cap. Trying manual capping.")
             elif "rtree" in error_msg:
-                Logger.log("w", "rtree library missing: %s. Trying without capping.", str(e))
+                Logger.log("w", "rtree library missing: %s. Trying manual capping.", str(e))
             else:
-                Logger.log("w", "Capped slicing failed: %s. Trying without capping.", str(e))
+                Logger.log("w", "Capped slicing failed: %s. Trying manual capping.", str(e))
 
-        # Strategy 2: Try without capping (works with non-watertight meshes)
+        # Strategy 2: Slice without capping, then manually cap
         try:
             mesh_upper = trimesh.intersections.slice_mesh_plane(
                 mesh,
@@ -686,10 +686,18 @@ class ObjectSplitter(Tool):
                 cap=False
             )
             if mesh_upper is not None and mesh_lower is not None:
-                Logger.log("i", "Slicing without capping succeeded (parts will have open cut surfaces)")
-                return mesh_upper, mesh_lower, False
+                # Try to manually cap the meshes
+                mesh_upper_capped = self._manualCapMesh(mesh_upper, plane_origin, plane_normal)
+                mesh_lower_capped = self._manualCapMesh(mesh_lower, plane_origin, -plane_normal)
+
+                if mesh_upper_capped is not None and mesh_lower_capped is not None:
+                    Logger.log("i", "Slicing with manual capping succeeded")
+                    return mesh_upper_capped, mesh_lower_capped, True
+                else:
+                    Logger.log("w", "Manual capping failed, using uncapped meshes")
+                    return mesh_upper, mesh_lower, False
         except Exception as e:
-            Logger.log("e", "Uncapped slicing also failed: %s", str(e))
+            Logger.log("e", "Uncapped slicing failed: %s", str(e))
 
         # Strategy 3: Manual vertex-based splitting as last resort
         try:
@@ -701,6 +709,70 @@ class ObjectSplitter(Tool):
             Logger.log("e", "Manual splitting failed: %s", str(e))
 
         return None, None, False
+
+    def _manualCapMesh(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
+                        plane_normal: numpy.ndarray) -> Optional["trimesh.Trimesh"]:
+        """
+        Manually cap a mesh by finding the boundary edges on the cut plane
+        and triangulating them to close the surface.
+        """
+        try:
+            # Get the cross-section path at the cut plane
+            section = mesh.section(plane_origin=plane_origin, plane_normal=plane_normal)
+            if section is None:
+                Logger.log("w", "Could not get cross-section for capping")
+                return None
+
+            # Convert to 2D for triangulation
+            path_2d, transform = section.to_planar()
+            if path_2d is None:
+                Logger.log("w", "Could not convert section to 2D")
+                return None
+
+            # Triangulate the 2D path
+            try:
+                vertices_2d, faces_2d = path_2d.triangulate()
+            except Exception as e:
+                Logger.log("w", "Triangulation failed: %s", str(e))
+                return None
+
+            if len(vertices_2d) == 0 or len(faces_2d) == 0:
+                Logger.log("w", "Triangulation produced empty result")
+                return None
+
+            # Transform triangulated vertices back to 3D
+            vertices_3d_homogeneous = numpy.column_stack([
+                vertices_2d,
+                numpy.zeros(len(vertices_2d)),
+                numpy.ones(len(vertices_2d))
+            ])
+            transform_inv = numpy.linalg.inv(transform)
+            vertices_3d = (transform_inv @ vertices_3d_homogeneous.T).T[:, :3]
+
+            # Create cap mesh
+            cap_mesh = trimesh.Trimesh(vertices=vertices_3d, faces=faces_2d)
+
+            # Ensure cap normal faces the right direction (away from the part)
+            # The cap should face in the direction of the plane normal
+            cap_centroid = cap_mesh.centroid
+            cap_normal = cap_mesh.face_normals.mean(axis=0)
+            cap_normal = cap_normal / numpy.linalg.norm(cap_normal)
+
+            if numpy.dot(cap_normal, plane_normal) < 0:
+                # Flip the faces
+                cap_mesh.faces = cap_mesh.faces[:, ::-1]
+
+            # Combine original mesh with cap
+            combined = trimesh.util.concatenate([mesh, cap_mesh])
+
+            Logger.log("d", "Manual capping added %d cap vertices, %d cap faces",
+                       len(vertices_3d), len(faces_2d))
+
+            return combined
+
+        except Exception as e:
+            Logger.log("w", "Manual capping error: %s", str(e))
+            return None
 
     def _manualMeshSplit(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
                           plane_normal: numpy.ndarray) -> Tuple[Optional["trimesh.Trimesh"], Optional["trimesh.Trimesh"]]:
