@@ -1024,28 +1024,22 @@ class ObjectSplitter(Tool):
                 Logger.log("w", "Could not get cross-section for connector placement")
                 return None
 
-            # Convert to 2D path and get centroid
-            path_2d, transform = section.to_planar()
-            if path_2d is None or len(path_2d.entities) == 0:
-                Logger.log("w", "Cross-section has no valid geometry")
+            # Get the 3D vertices directly from the section
+            # The section is a Path3D object with vertices in 3D space
+            if not hasattr(section, 'vertices') or len(section.vertices) == 0:
+                Logger.log("w", "Cross-section has no vertices")
                 return None
 
-            # Get centroid in 2D
-            centroid_2d = path_2d.centroid
+            # Calculate centroid directly from 3D vertices
+            vertices_3d = section.vertices
+            centroid_3d = vertices_3d.mean(axis=0)
 
-            # Transform back to 3D
-            # The transform is a 4x4 matrix that maps 3D to 2D
-            # We need to invert it to go from 2D back to 3D
-            centroid_3d_homogeneous = numpy.array([centroid_2d[0], centroid_2d[1], 0, 1])
-            transform_inv = numpy.linalg.inv(transform)
-            centroid_3d = (transform_inv @ centroid_3d_homogeneous)[:3]
+            # Project centroid onto the cut plane to ensure it's exactly on the plane
+            # (it should already be close, but this ensures precision)
+            dist_to_plane = numpy.dot(centroid_3d - plane_origin, plane_normal)
+            centroid_3d = centroid_3d - dist_to_plane * plane_normal
 
-            # Verify the centroid is far enough from edges
-            # Check distance from centroid to nearest boundary
-            min_dist = self._connector_diameter / 2 + 1.0  # Need at least radius + 1mm margin
-
-            # For now, just use the centroid - more sophisticated edge checking could be added
-            Logger.log("d", "Connector position: %s", str(centroid_3d))
+            Logger.log("d", "Connector position (3D centroid): %s", str(centroid_3d))
 
             return centroid_3d
 
