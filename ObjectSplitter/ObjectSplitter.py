@@ -1,6 +1,9 @@
 # Copyright (c) 2024 Emanuel Lönnberg.
 # This tool is released under the terms of the LGPLv3 or higher.
 
+import sys
+import os
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QProgressDialog
 
@@ -31,13 +34,37 @@ import numpy
 import math
 from typing import Optional, Tuple, List
 
+# Log Python environment info for debugging
+Logger.log("i", "ObjectSplitter: Python executable: %s", sys.executable)
+Logger.log("i", "ObjectSplitter: Python version: %s", sys.version)
+Logger.log("i", "ObjectSplitter: Python path: %s", os.pathsep.join(sys.path[:3]))  # First 3 paths
+
 # Try to import trimesh - it's optional but required for cutting
 try:
     import trimesh
     TRIMESH_AVAILABLE = True
+    Logger.log("i", "ObjectSplitter: trimesh version: %s", trimesh.__version__)
 except ImportError:
     TRIMESH_AVAILABLE = False
     Logger.log("w", "trimesh not available - Object Splitter cutting functionality disabled")
+
+# Check for rtree availability
+try:
+    import rtree
+    RTREE_AVAILABLE = True
+    Logger.log("i", "ObjectSplitter: rtree is available")
+except ImportError:
+    RTREE_AVAILABLE = False
+    Logger.log("w", "ObjectSplitter: rtree not available - will use fallback triangulation")
+
+# Check for scipy (used for fallback triangulation)
+try:
+    from scipy.spatial import Delaunay
+    SCIPY_AVAILABLE = True
+    Logger.log("i", "ObjectSplitter: scipy is available for triangulation")
+except ImportError:
+    SCIPY_AVAILABLE = False
+    Logger.log("w", "ObjectSplitter: scipy not available - triangulation may fail")
 
 
 class ObjectSplitter(Tool):
@@ -715,6 +742,7 @@ class ObjectSplitter(Tool):
         """
         Manually cap a mesh by finding the boundary edges on the cut plane
         and triangulating them to close the surface.
+        Uses scipy Delaunay triangulation to avoid rtree dependency.
         """
         try:
             # Get the cross-section path at the cut plane
@@ -729,14 +757,54 @@ class ObjectSplitter(Tool):
                 Logger.log("w", "Could not convert section to 2D")
                 return None
 
-            # Triangulate the 2D path
-            try:
-                vertices_2d, faces_2d = path_2d.triangulate()
-            except Exception as e:
-                Logger.log("w", "Triangulation failed: %s", str(e))
-                return None
+            # Get vertices from the path
+            # The path contains discrete curves - we need to extract vertices
+            vertices_2d = None
+            faces_2d = None
 
-            if len(vertices_2d) == 0 or len(faces_2d) == 0:
+            # Try scipy Delaunay triangulation first (doesn't need rtree)
+            if SCIPY_AVAILABLE:
+                try:
+                    # Get all vertices from path entities
+                    all_vertices = []
+                    for entity in path_2d.entities:
+                        points = path_2d.vertices[entity.points]
+                        all_vertices.extend(points)
+
+                    if len(all_vertices) < 3:
+                        Logger.log("w", "Not enough vertices for triangulation")
+                        return None
+
+                    vertices_2d = numpy.array(all_vertices)
+
+                    # Remove duplicate vertices
+                    vertices_2d = numpy.unique(vertices_2d, axis=0)
+
+                    if len(vertices_2d) < 3:
+                        Logger.log("w", "Not enough unique vertices for triangulation")
+                        return None
+
+                    # Use scipy Delaunay triangulation
+                    tri = Delaunay(vertices_2d)
+                    faces_2d = tri.simplices
+
+                    Logger.log("d", "Scipy Delaunay triangulation: %d vertices, %d faces",
+                               len(vertices_2d), len(faces_2d))
+
+                except Exception as e:
+                    Logger.log("w", "Scipy triangulation failed: %s", str(e))
+                    vertices_2d = None
+                    faces_2d = None
+
+            # Fallback to trimesh triangulation if scipy failed
+            if vertices_2d is None or faces_2d is None:
+                try:
+                    vertices_2d, faces_2d = path_2d.triangulate()
+                except Exception as e:
+                    Logger.log("w", "Trimesh triangulation also failed: %s", str(e))
+                    return None
+
+            if vertices_2d is None or len(vertices_2d) == 0 or faces_2d is None or len(faces_2d) == 0:
                 Logger.log("w", "Triangulation produced empty result")
                 return None
 
@@ -754,13 +822,14 @@ class ObjectSplitter(Tool):
 
             # Ensure cap normal faces the right direction (away from the part)
             # The cap should face in the direction of the plane normal
-            cap_centroid = cap_mesh.centroid
-            cap_normal = cap_mesh.face_normals.mean(axis=0)
-            cap_normal = cap_normal / numpy.linalg.norm(cap_normal)
-
-            if numpy.dot(cap_normal, plane_normal) < 0:
-                # Flip the faces
-                cap_mesh.faces = cap_mesh.faces[:, ::-1]
+            if len(cap_mesh.face_normals) > 0:
+                cap_normal = cap_mesh.face_normals.mean(axis=0)
+                norm = numpy.linalg.norm(cap_normal)
+                if norm > 1e-6:
+                    cap_normal = cap_normal / norm
+                    if numpy.dot(cap_normal, plane_normal) < 0:
+                        # Flip the faces
+                        cap_mesh.faces = cap_mesh.faces[:, ::-1]
 
             # Combine original mesh with cap
             combined = trimesh.util.concatenate([mesh, cap_mesh])
