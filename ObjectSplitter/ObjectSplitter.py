@@ -1172,6 +1172,10 @@ class ObjectSplitter(Tool):
         """
         Add peg to smaller part and hole to larger part.
         Returns the modified meshes.
+
+        Uses simple mesh concatenation for pegs (faster and more reliable than boolean union
+        since the peg sits on the cut surface without overlapping).
+        For holes, tries boolean difference with fallback to skipping if it fails.
         """
         if not self._connector_enabled:
             return mesh_upper, mesh_lower
@@ -1198,18 +1202,35 @@ class ObjectSplitter(Tool):
             self._connector_diameter, self._connector_height, self._connector_clearance
         )
 
+        mesh_upper_result = mesh_upper
+        mesh_lower_result = mesh_lower
+
         # Apply to the appropriate meshes
         try:
             if upper_role == "peg":
-                # Upper gets peg (union), lower gets hole (difference)
-                mesh_upper_result = trimesh.boolean.union([mesh_upper, peg])
-                mesh_lower_result = trimesh.boolean.difference([mesh_lower, hole])
-                Logger.log("i", "Added peg to upper part, hole to lower part")
+                # Upper gets peg (concatenate - peg sits on surface without overlap)
+                mesh_upper_result = trimesh.util.concatenate([mesh_upper, peg])
+                Logger.log("i", "Added peg to upper part via concatenation")
+
+                # Lower gets hole (boolean difference)
+                mesh_lower_result = self._tryBooleanDifference(mesh_lower, hole)
+                if mesh_lower_result is not None:
+                    Logger.log("i", "Added hole to lower part via boolean difference")
+                else:
+                    Logger.log("w", "Could not create hole in lower part, using original mesh")
+                    mesh_lower_result = mesh_lower
             else:
-                # Upper gets hole (difference), lower gets peg (union)
-                mesh_upper_result = trimesh.boolean.difference([mesh_upper, hole])
-                mesh_lower_result = trimesh.boolean.union([mesh_lower, peg])
-                Logger.log("i", "Added hole to upper part, peg to lower part")
+                # Lower gets peg (concatenate)
+                mesh_lower_result = trimesh.util.concatenate([mesh_lower, peg])
+                Logger.log("i", "Added peg to lower part via concatenation")
+
+                # Upper gets hole (boolean difference)
+                mesh_upper_result = self._tryBooleanDifference(mesh_upper, hole)
+                if mesh_upper_result is not None:
+                    Logger.log("i", "Added hole to upper part via boolean difference")
+                else:
+                    Logger.log("w", "Could not create hole in upper part, using original mesh")
+                    mesh_upper_result = mesh_upper
 
             # Verify results are valid
             if mesh_upper_result is None or len(mesh_upper_result.vertices) == 0:
@@ -1224,3 +1245,38 @@ class ObjectSplitter(Tool):
         except Exception as e:
             Logger.log("e", "Error adding connectors: %s. Using meshes without connectors.", str(e))
             return mesh_upper, mesh_lower
+
+    def _tryBooleanDifference(self, mesh: "trimesh.Trimesh", tool: "trimesh.Trimesh") -> Optional["trimesh.Trimesh"]:
+        """
+        Try to perform boolean difference using available engines.
+        Returns None if all methods fail.
+        """
+        # Try manifold3d first (best option if available)
+        try:
+            result = trimesh.boolean.difference([mesh, tool], engine='manifold')
+            if result is not None and len(result.vertices) > 0:
+                Logger.log("d", "Boolean difference succeeded with manifold engine")
+                return result
+        except Exception as e:
+            Logger.log("d", "Manifold boolean failed: %s", str(e))
+
+        # Try blender engine
+        try:
+            result = trimesh.boolean.difference([mesh, tool], engine='blender')
+            if result is not None and len(result.vertices) > 0:
+                Logger.log("d", "Boolean difference succeeded with blender engine")
+                return result
+        except Exception as e:
+            Logger.log("d", "Blender boolean failed: %s", str(e))
+
+        # Try default engine (may use OpenSCAD)
+        try:
+            result = trimesh.boolean.difference([mesh, tool])
+            if result is not None and len(result.vertices) > 0:
+                Logger.log("d", "Boolean difference succeeded with default engine")
+                return result
+        except Exception as e:
+            Logger.log("d", "Default boolean failed: %s", str(e))
+
+        Logger.log("w", "All boolean difference methods failed")
+        return None
