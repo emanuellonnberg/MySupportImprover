@@ -1,7 +1,7 @@
 # Copyright (c) 2024 Emanuel Lönnberg.
 # This tool is released under the terms of the LGPLv3 or higher.
 
-from PyQt6.QtCore import Qt, pyqtProperty, pyqtSignal
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from UM.Logger import Logger
@@ -48,9 +48,6 @@ class ObjectSplitter(Tool):
     CUT_MODE_VERTICAL = "vertical"          # Cut perpendicular to build plate
     CUT_MODE_SMALLEST = "smallest"          # Find smallest cross-section
     CUT_MODE_CUSTOM = "custom"              # User-defined plane orientation
-
-    # Signals
-    cutComplete = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -557,8 +554,6 @@ class ObjectSplitter(Tool):
 
         Logger.log("i", "Split complete: created '%s' and '%s'",
                    node_upper.getName(), node_lower.getName())
-
-        self.cutComplete.emit()
 
     def _sliceMeshWithFallback(self, mesh: "trimesh.Trimesh", plane_origin: numpy.ndarray,
                                 plane_normal: numpy.ndarray) -> Tuple[Optional["trimesh.Trimesh"], Optional["trimesh.Trimesh"], bool]:
