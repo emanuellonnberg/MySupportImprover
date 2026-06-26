@@ -1327,86 +1327,131 @@ Item {
             color: UM.Theme.getColor("lining")
         }
 
-        // Support Settings Info Header (hidden in wing mode)
+        // Support Settings (editable; changing any value flips Density to Custom)
         Label {
             visible: base.currentSupportMode !== "wing"
-            text: catalog.i18nc("@label", "Support Settings (applied to volume):")
+            text: catalog.i18nc("@label", "Support Settings:")
             font: UM.Theme.getFont("default_bold")
             color: UM.Theme.getColor("text")
             renderType: Text.NativeRendering
         }
 
-        // Support Settings Display Grid (hidden in wing mode)
         Grid {
             id: supportSettingsGrid
             visible: base.currentSupportMode !== "wing"
             columns: 2
             columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
             rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            verticalItemAlignment: Grid.AlignVCenter
 
             Label {
                 text: catalog.i18nc("@label", "Pattern:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportPattern") : "grid"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            ComboBox {
+                id: patternComboBox
+                width: 130
+                height: UM.Theme.getSize("setting_control").height
+                model: ["lines", "grid", "triangles", "concentric", "zigzag"]
+                currentIndex: {
+                    base.currentSupportMode  // dependency: re-read when preset loads
+                    if (UM.ActiveTool) {
+                        var i = model.indexOf(UM.ActiveTool.properties.getValue("SupportPattern"))
+                        if (i >= 0) return i
+                    }
+                    return 1
+                }
+                onActivated: {
+                    if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportPattern", model[currentIndex])
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Infill Rate:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: (UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate") : 15) + "%"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: "%"
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate").toString() : "15"
+                }
+                validator: IntValidator { bottom: 0; top: 100 }
+                onEditingFinished: {
+                    var v = parseInt(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportInfillRate", v)
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Line Width:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: (UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40") + " mm"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: "mm"
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40"
+                }
+                validator: DoubleValidator { bottom: 0.1; top: 2.0; decimals: 2 }
+                onEditingFinished: {
+                    var v = parseFloat(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportLineWidth", v)
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Wall Count:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount") : 1
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: ""
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount").toString() : "1"
+                }
+                validator: IntValidator { bottom: 0; top: 5 }
+                onEditingFinished: {
+                    var v = parseInt(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportWallCount", v)
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Interface:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportInterfaceEnable", checked) }
+            }
+
             Label {
-                text: (UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable")) ? "Enabled" : "Disabled"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
+                text: catalog.i18nc("@label", "Roof:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportRoofEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportRoofEnable", checked) }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Bottom:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportBottomEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportBottomEnable", checked) }
             }
         }
     }
