@@ -33,7 +33,7 @@ from cura.Scene.BuildPlateDecorator import BuildPlateDecorator
 from UM.Settings.SettingInstance import SettingInstance
 
 import numpy
-from collections import deque
+from collections import deque, defaultdict
 from typing import List, Dict, Set, Tuple, Optional
 
 # Suggested solution from fieldOfView . in this discussion solved in Cura 4.9
@@ -2303,12 +2303,17 @@ class MySupportImprover(Tool):
         if seed_faces is None or len(seed_faces) == 0:
             return []
 
+        if max_faces is not None and max_faces <= 0:
+            max_faces = None
+        if max_depth is not None and max_depth <= 0:
+            max_depth = None
+
         visited = set(int(face_id) for face_id in seed_faces)
         queue = deque((int(face_id), 0) for face_id in seed_faces)
 
         while queue:
             face_id, depth = queue.popleft()
-            if depth >= max_depth:
+            if max_depth is not None and depth >= max_depth:
                 continue
             for neighbor in adjacency.get(face_id, []):
                 if neighbor in visited:
@@ -2316,11 +2321,195 @@ class MySupportImprover(Tool):
                 if not candidate_mask[neighbor]:
                     continue
                 visited.add(neighbor)
-                if len(visited) >= max_faces:
+                if max_faces is not None and len(visited) >= max_faces:
                     return list(visited)
                 queue.append((neighbor, depth + 1))
 
         return list(visited)
+
+    def _buildFaceSpatialIndex(self, face_min_world: numpy.ndarray,
+                               face_max_world: numpy.ndarray) -> Optional[Tuple[Dict[Tuple[int, int], List[int]], float, float, float]]:
+        """Build a spatial index for faces based on XZ bounds."""
+        if len(face_min_world) == 0:
+            return None
+
+        min_x = face_min_world[:, 0]
+        max_x = face_max_world[:, 0]
+        min_z = face_min_world[:, 2]
+        max_z = face_max_world[:, 2]
+
+        x_span = float(max_x.max() - min_x.min())
+        z_span = float(max_z.max() - min_z.min())
+        max_span = max(x_span, z_span)
+        cell_size = 2.0
+        if max_span > 0.0:
+            cell_size = max(1.0, min(5.0, max_span / 40.0))
+
+        origin_x = float(min_x.min())
+        origin_z = float(min_z.min())
+        grid: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+        for face_id in range(len(face_min_world)):
+            min_cx = int((min_x[face_id] - origin_x) // cell_size)
+            max_cx = int((max_x[face_id] - origin_x) // cell_size)
+            min_cz = int((min_z[face_id] - origin_z) // cell_size)
+            max_cz = int((max_z[face_id] - origin_z) // cell_size)
+            for cx in range(min_cx, max_cx + 1):
+                for cz in range(min_cz, max_cz + 1):
+                    grid[(cx, cz)].append(face_id)
+
+        return grid, origin_x, origin_z, cell_size
+
+    def _faceHasSupportBelow(self, face_id: int,
+                             face_min_world: numpy.ndarray,
+                             face_max_world: numpy.ndarray,
+                             support_index: Optional[Tuple[Dict[Tuple[int, int], List[int]], float, float, float]],
+                             ignore_mask: numpy.ndarray,
+                             support_clearance: float) -> bool:
+        """Check if a face has any supporting geometry below within its XZ footprint."""
+        if support_index is None:
+            return False
+
+        grid, origin_x, origin_z, cell_size = support_index
+        min_x = float(face_min_world[face_id][0])
+        max_x = float(face_max_world[face_id][0])
+        min_z = float(face_min_world[face_id][2])
+        max_z = float(face_max_world[face_id][2])
+        min_y = float(face_min_world[face_id][1])
+        y_threshold = min_y - support_clearance
+
+        min_cx = int((min_x - origin_x) // cell_size)
+        max_cx = int((max_x - origin_x) // cell_size)
+        min_cz = int((min_z - origin_z) // cell_size)
+        max_cz = int((max_z - origin_z) // cell_size)
+        for cx in range(min_cx, max_cx + 1):
+            for cz in range(min_cz, max_cz + 1):
+                for other in grid.get((cx, cz), []):
+                    if other == face_id or ignore_mask[other]:
+                        continue
+                    if face_max_world[other][1] >= y_threshold:
+                        continue
+                    if face_max_world[other][0] < min_x or face_min_world[other][0] > max_x:
+                        continue
+                    if face_max_world[other][2] < min_z or face_min_world[other][2] > max_z:
+                        continue
+                    return True
+        return False
+
+    def _expandDanglingFaceRegionWithSupport(self, seed_faces: numpy.ndarray,
+                                             adjacency: Dict[int, List[int]],
+                                             candidate_mask: numpy.ndarray,
+                                             face_min_world: numpy.ndarray,
+                                             face_max_world: numpy.ndarray,
+                                             support_index: Optional[Tuple[Dict[Tuple[int, int], List[int]], float, float, float]],
+                                             support_clearance: float) -> List[int]:
+        """Expand seed faces across connected unsupported candidate faces."""
+        if seed_faces is None or len(seed_faces) == 0:
+            return []
+
+        face_count = len(candidate_mask)
+        region_mask = numpy.zeros(face_count, dtype=bool)
+        visited = set(int(face_id) for face_id in seed_faces)
+        for face_id in visited:
+            region_mask[face_id] = True
+
+        queue = deque(int(face_id) for face_id in seed_faces)
+        while queue:
+            face_id = queue.popleft()
+            for neighbor in adjacency.get(face_id, []):
+                if neighbor in visited:
+                    continue
+                if not candidate_mask[neighbor]:
+                    continue
+                if self._faceHasSupportBelow(
+                        int(neighbor),
+                        face_min_world,
+                        face_max_world,
+                        support_index,
+                        region_mask,
+                        support_clearance,
+                ):
+                    continue
+                visited.add(int(neighbor))
+                region_mask[int(neighbor)] = True
+                queue.append(int(neighbor))
+
+        return list(visited)
+
+    def _computeUnsupportedFaceMask(self, candidate_mask: numpy.ndarray,
+                                    face_min_world: numpy.ndarray,
+                                    face_max_world: numpy.ndarray,
+                                    support_mask: Optional[numpy.ndarray] = None,
+                                    support_clearance: float = 0.1) -> numpy.ndarray:
+        """Filter candidate faces to those with no supporting geometry below in their XZ footprint."""
+        if candidate_mask is None or len(candidate_mask) == 0:
+            return candidate_mask
+
+        face_count = len(face_min_world)
+        if face_count == 0:
+            return numpy.zeros(0, dtype=bool)
+
+        if support_mask is None:
+            support_mask = ~candidate_mask
+
+        min_x = face_min_world[:, 0]
+        max_x = face_max_world[:, 0]
+        min_y = face_min_world[:, 1]
+        max_y = face_max_world[:, 1]
+        min_z = face_min_world[:, 2]
+        max_z = face_max_world[:, 2]
+
+        x_span = float(max_x.max() - min_x.min())
+        z_span = float(max_z.max() - min_z.min())
+        max_span = max(x_span, z_span)
+        cell_size = 2.0
+        if max_span > 0.0:
+            cell_size = max(1.0, min(5.0, max_span / 40.0))
+
+        origin_x = float(min_x.min())
+        origin_z = float(min_z.min())
+        grid: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+        support_ids = numpy.where(support_mask)[0]
+        for face_id in support_ids:
+            min_cx = int((min_x[face_id] - origin_x) // cell_size)
+            max_cx = int((max_x[face_id] - origin_x) // cell_size)
+            min_cz = int((min_z[face_id] - origin_z) // cell_size)
+            max_cz = int((max_z[face_id] - origin_z) // cell_size)
+            for cx in range(min_cx, max_cx + 1):
+                for cz in range(min_cz, max_cz + 1):
+                    grid[(cx, cz)].append(face_id)
+
+        candidate_ids = numpy.where(candidate_mask)[0]
+        unsupported = numpy.zeros(face_count, dtype=bool)
+        for face_id in candidate_ids:
+            y_threshold = float(min_y[face_id] - support_clearance)
+            min_x_i = float(min_x[face_id])
+            max_x_i = float(max_x[face_id])
+            min_z_i = float(min_z[face_id])
+            max_z_i = float(max_z[face_id])
+            min_cx = int((min_x_i - origin_x) // cell_size)
+            max_cx = int((max_x_i - origin_x) // cell_size)
+            min_cz = int((min_z_i - origin_z) // cell_size)
+            max_cz = int((max_z_i - origin_z) // cell_size)
+            supported = False
+            for cx in range(min_cx, max_cx + 1):
+                if supported:
+                    break
+                for cz in range(min_cz, max_cz + 1):
+                    for other in grid.get((cx, cz), []):
+                        if max_y[other] >= y_threshold:
+                            continue
+                        if max_x[other] < min_x_i or min_x[other] > max_x_i:
+                            continue
+                        if max_z[other] < min_z_i or min_z[other] > max_z_i:
+                            continue
+                        supported = True
+                        break
+                    if supported:
+                        break
+            if not supported:
+                unsupported[face_id] = True
+
+        return unsupported & candidate_mask
 
     def _mergeOverlappingFaceRegions(self, regions: List[List[int]]) -> List[List[int]]:
         """Merge face regions that overlap."""
@@ -2563,7 +2752,14 @@ class MySupportImprover(Tool):
             face_down_angles = numpy.degrees(numpy.arccos(face_down_dot))
             downward_mask = numpy.dot(normals_for_dangling, build_direction) > 0.0
             dangling_min_angle = 0.0
-            dangling_candidate_mask = downward_mask & overhang_mask
+            if self._detect_dangling_vertices:
+                dangling_candidate_mask = downward_mask & (face_min_world[:, 1] > (min_face_y - 0.01))
+            else:
+                dangling_candidate_mask = downward_mask & overhang_mask
+            dangling_support_index = None
+            if self._detect_dangling_vertices and numpy.any(dangling_candidate_mask):
+                self._updateProgress("Indexing mesh for dangling extent...", 40)
+                dangling_support_index = self._buildFaceSpatialIndex(face_min_world, face_max_world)
             downward_face_ids = numpy.where(downward_mask)[0]
 
             face_lower_fraction = numpy.zeros(face_count, dtype=numpy.float32)
@@ -2654,12 +2850,14 @@ class MySupportImprover(Tool):
                         if len(seed_faces) == 0:
                             Logger.log("d", "Dangling region %d: no seed faces in candidate mask", idx)
                             continue
-                        expanded = self._expandDanglingFaceRegion(
+                        expanded = self._expandDanglingFaceRegionWithSupport(
                             seed_faces,
                             adjacency_all,
                             dangling_candidate_mask,
-                            max_faces=180,
-                            max_depth=4,
+                            face_min_world,
+                            face_max_world,
+                            dangling_support_index,
+                            support_clearance=0.1,
                         )
                         Logger.log(
                             "d",
@@ -2858,7 +3056,8 @@ class MySupportImprover(Tool):
                                     height_cut,
                                 )
                     if dangling_vertex_regions_active:
-                        dangling_faces_full = dangling_region_faces_full or region_faces_for_bounds
+                        region_faces_full = region_faces
+                        dangling_faces_full = region_faces_full if region_faces_full else region_faces_for_bounds
                         region_face_mask = numpy.zeros(len(indices), dtype=bool)
                         region_face_mask[dangling_faces_full] = True
                         _, face_bounds_world = self._calculateRegionBounds(vertices_world, indices, region_faces_for_bounds)
@@ -2924,6 +3123,7 @@ class MySupportImprover(Tool):
                         region_size_world_x = float(max_bounds_world_faces[0] - min_bounds_world_faces[0])
                         region_size_world_z = float(max_bounds_world_faces[2] - min_bounds_world_faces[2])
                         min_dangling_y = float(min_bounds_world[1])
+                        region_top_y = float(max_bounds_world[1])
                         base_bottom_y = max(build_plate_y, min_dangling_y - bottom_clearance)
                         position_world_x = (min_bounds_world_faces[0] + max_bounds_world_faces[0]) / 2.0
                         position_world_z = (min_bounds_world_faces[2] + max_bounds_world_faces[2]) / 2.0
@@ -2965,10 +3165,13 @@ class MySupportImprover(Tool):
                                 other_face_max_y_side = other_face_max_y[~blocking_mask]
                             lower_limit = build_plate_y
                             upper_limit = float(mesh_max_y + top_clearance)
+                            downward_other_mask = None
+                            if other_face_min_y.size > 0:
+                                downward_other_mask = downward_mask[other_face_mask]
                             other_above_count = 0
                             other_below_count = 0
                             if other_face_min_y_blocking.size > 0:
-                                other_above = other_face_min_y_blocking[other_face_min_y_blocking > (min_dangling_y + min_overlap)]
+                                other_above = other_face_min_y_blocking[other_face_min_y_blocking > (region_top_y + min_overlap)]
                                 other_above_count = int(other_above.size)
                                 if other_above.size > 0:
                                     upper_limit = min(upper_limit, float(other_above.min()) - top_clearance)
@@ -2976,6 +3179,12 @@ class MySupportImprover(Tool):
                                 other_below_count = int(other_below.size)
                                 if other_below.size > 0:
                                     lower_limit = max(lower_limit, float(other_below.max()) + bottom_clearance)
+                            if downward_other_mask is not None and numpy.any(downward_other_mask):
+                                downward_other_min = other_face_min_y[downward_other_mask]
+                                if downward_other_min.size > 0:
+                                    min_downward_above = downward_other_min[downward_other_min > (region_top_y + min_overlap)]
+                                    if min_downward_above.size > 0:
+                                        upper_limit = min(upper_limit, float(min_downward_above.min()) - top_clearance)
 
                             bottom_y = max(base_bottom_y, lower_limit)
                             top_y = upper_limit
