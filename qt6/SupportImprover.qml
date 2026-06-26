@@ -18,6 +18,14 @@ Item {
     property real defaultY: 3.0
     property real defaultZ: 3.0
 
+    // Remembers the last non-wing density so switching Wing -> Modifier Volume restores it
+    property string lastDensityMode: "structural"
+
+    // Reactive mirror of the SupportMode property. Cura's properties.getValue() is NOT a
+    // reactive QML binding, so visibility bindings must read this instead and we update it
+    // imperatively (dropdown handlers + onPropertiesChanged).
+    property string currentSupportMode: "structural"
+
     // Properties to track current values with proper default handling
     property real currentX: UM.ActiveTool && UM.ActiveTool.properties.cubeX !== undefined ? UM.ActiveTool.properties.cubeX : defaultX
     property real currentY: UM.ActiveTool && UM.ActiveTool.properties.cubeY !== undefined ? UM.ActiveTool.properties.cubeY : defaultY
@@ -27,6 +35,10 @@ Item {
         console.log("Support Improver QML loaded")
         if (UM.ActiveTool) {
             console.log("Tool active")
+            base.currentSupportMode = UM.ActiveTool.properties.getValue("SupportMode")
+            if (base.currentSupportMode !== "wing") {
+                base.lastDensityMode = base.currentSupportMode
+            }
             console.log("Initial values - X:", currentX, "Y:", currentY, "Z:", currentZ)
             
             // Only apply preset values if not using custom values
@@ -55,13 +67,13 @@ Item {
         // Remove anchors from Column
         width: mainGrid.width + UM.Theme.getSize("default_margin").width * 2
 
-        // Support Mode Selection
+        // Support Type Selection (Modifier Volume vs Wing)
         Row {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
 
             Label {
                 height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Support Mode:")
+                text: catalog.i18nc("@label", "Support Type:")
                 font: UM.Theme.getFont("default")
                 color: UM.Theme.getColor("text")
                 verticalAlignment: Text.AlignVCenter
@@ -69,42 +81,67 @@ Item {
             }
 
             ComboBox {
-                id: supportModeComboBox
+                id: supportTypeComboBox
                 width: 150
                 height: UM.Theme.getSize("setting_control").height
-                model: ["Structural (Dense)", "Stability (Minimal)", "Attached Wing", "Custom"]
-                currentIndex: {
-                    if (UM.ActiveTool) {
-                        var mode = UM.ActiveTool.properties.getValue("SupportMode")
-                        if (mode === "structural") return 0
-                        if (mode === "stability") return 1
-                        if (mode === "wing") return 2
-                        if (mode === "custom") return 3
-                    }
-                    return 0
-                }
+                model: [catalog.i18nc("@option", "Modifier Volume"), catalog.i18nc("@option", "Wing")]
+                currentIndex: base.currentSupportMode === "wing" ? 1 : 0
                 onActivated: {
-                    if (UM.ActiveTool) {
-                        var modeMap = ["structural", "stability", "wing", "custom"]
-                        UM.ActiveTool.setProperty("SupportMode", modeMap[currentIndex])
+                    if (!UM.ActiveTool) return
+                    if (currentIndex === 1) {
+                        UM.ActiveTool.setProperty("SupportMode", "wing")
+                        base.currentSupportMode = "wing"
+                    } else {
+                        UM.ActiveTool.setProperty("SupportMode", base.lastDensityMode)
+                        base.currentSupportMode = base.lastDensityMode
                     }
                 }
             }
         }
 
-        // Support Mode Description
+        // Density preset (only meaningful for Modifier Volume)
+        Row {
+            visible: base.currentSupportMode !== "wing"
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Density:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+            }
+
+            ComboBox {
+                id: densityComboBox
+                width: 150
+                height: UM.Theme.getSize("setting_control").height
+                model: [catalog.i18nc("@option", "Structural (Dense)"), catalog.i18nc("@option", "Stability (Minimal)"), catalog.i18nc("@option", "Custom")]
+                currentIndex: {
+                    if (base.currentSupportMode === "structural") return 0
+                    if (base.currentSupportMode === "stability") return 1
+                    if (base.currentSupportMode === "custom") return 2
+                    return 0
+                }
+                onActivated: {
+                    if (!UM.ActiveTool) return
+                    var modeMap = ["structural", "stability", "custom"]
+                    base.lastDensityMode = modeMap[currentIndex]
+                    UM.ActiveTool.setProperty("SupportMode", modeMap[currentIndex])
+                    base.currentSupportMode = modeMap[currentIndex]
+                }
+            }
+        }
+
+        // Support Mode Description (from Python, single source of truth)
         Label {
+            visible: base.currentSupportMode !== "wing"
             width: parent.width
             height: UM.Theme.getSize("setting_control").height
             text: {
-                if (UM.ActiveTool) {
-                    var mode = UM.ActiveTool.properties.getValue("SupportMode")
-                    if (mode === "structural") return "Dense support for load-bearing areas"
-                    if (mode === "stability") return "Minimal support for edge stabilization"
-                    if (mode === "wing") return "Attached wing extending to build plate"
-                    if (mode === "custom") return "Custom support settings"
-                }
-                return ""
+                base.currentSupportMode  // dependency so it re-reads when mode changes
+                return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportModeDescription") : ""
             }
             font: UM.Theme.getFont("default_italic")
             color: UM.Theme.getColor("text_inactive")
@@ -428,7 +465,7 @@ Item {
         // Wing Settings (only visible in wing mode)
         Column {
             id: wingSettingsColumn
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") === "wing"
+            visible: base.currentSupportMode === "wing"
             spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
             width: parent.width
 
@@ -699,7 +736,7 @@ Item {
 
         // Size Presets Row (hidden in wing mode)
         Row {
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
 
             Label {
@@ -748,7 +785,7 @@ Item {
         Row {
             id: savePresetRow
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && base.currentSupportMode !== "wing"
             height: visible ? implicitHeight : 0
 
             TextField {
@@ -1030,7 +1067,7 @@ Item {
 
         Grid {
             id: mainGrid
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             columns: 2
             flow: Grid.LeftToRight
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
@@ -1283,7 +1320,7 @@ Item {
 
         // Separator before support settings (hidden in wing mode)
         Rectangle {
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             width: parent.width
             height: 1
             color: UM.Theme.getColor("lining")
@@ -1291,7 +1328,7 @@ Item {
 
         // Support Settings Info Header (hidden in wing mode)
         Label {
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             text: catalog.i18nc("@label", "Support Settings (applied to volume):")
             font: UM.Theme.getFont("default_bold")
             color: UM.Theme.getColor("text")
@@ -1301,7 +1338,7 @@ Item {
         // Support Settings Display Grid (hidden in wing mode)
         Grid {
             id: supportSettingsGrid
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             columns: 2
             columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
             rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
@@ -1387,6 +1424,8 @@ Item {
                 if (UM.ActiveTool.properties.cubeZ !== undefined) {
                     base.currentZ = UM.ActiveTool.properties.cubeZ
                 }
+                // Keep the reactive mirror in sync (e.g. when editing a setting flips mode -> custom)
+                base.currentSupportMode = UM.ActiveTool.properties.getValue("SupportMode")
             }
         }
     }
