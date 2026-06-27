@@ -425,6 +425,474 @@ Item {
             }
         }
 
+        // Size Presets Row (hidden in wing mode)
+        Row {
+            visible: base.currentSupportMode !== "wing"
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Size Preset:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+            }
+
+            ComboBox {
+                id: presetComboBox
+                width: 120
+                height: UM.Theme.getSize("setting_control").height
+                model: {
+                    if (UM.ActiveTool && UM.ActiveTool.properties.getValue("Presets")) {
+                        var presets = Object.keys(UM.ActiveTool.properties.getValue("Presets"))
+                        if (UM.ActiveTool.properties.getValue("IsCustom")) {
+                            presets.push("Custom")
+                        }
+                        return presets
+                    }
+                    return []
+                }
+                currentIndex: {
+                    if (UM.ActiveTool) {
+                        if (UM.ActiveTool.properties.getValue("IsCustom")) {
+                            return model.indexOf("Custom")
+                        }
+                        var presetName = UM.ActiveTool.properties.getValue("CurrentPreset")
+                        var index = model.indexOf(presetName)
+                        return index >= 0 ? index : 0
+                    }
+                    return 0
+                }
+                onActivated: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.triggerActionWithData("applyPreset", currentText)
+                    }
+                }
+            }
+        }
+
+        // Save Preset Row - only visible in custom mode (and not wing mode)
+        Row {
+            id: savePresetRow
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && base.currentSupportMode !== "wing"
+            height: visible ? implicitHeight : 0
+
+            TextField {
+                id: presetNameField
+                width: 120
+                height: UM.Theme.getSize("setting_control").height
+                placeholderText: catalog.i18nc("@label", "Preset name")
+                validator: RegularExpressionValidator {
+                    regularExpression: /^[a-zA-Z0-9\- ]+$/
+                }
+            }
+
+            Button {
+                id: savePresetButton
+                width: 70
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@button", "Save")
+                enabled: presetNameField.text.length > 0
+                onClicked: {
+                    if (UM.ActiveTool) {
+                        UM.ActiveTool.triggerActionWithData("savePreset", presetNameField.text)
+                        presetNameField.text = ""  // Clear the field after saving
+                    }
+                }
+            }
+        }
+
+
+        Grid {
+            id: mainGrid
+            visible: base.currentSupportMode !== "wing"
+            columns: 2
+            flow: Grid.LeftToRight
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Width (X)")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                width: Math.ceil(contentWidth)
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+                
+                Slider {
+                    id: xSlider
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 1.0
+                    to: 100.0
+                    value: {
+                        if (UM.ActiveTool) {
+                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                            var presets = UM.ActiveTool.properties.getValue("Presets")
+                            if (currentPreset && presets && presets[currentPreset]) {
+                                return parseFloat(presets[currentPreset].x)
+                            }
+                            return UM.ActiveTool.properties.getValue("CubeX")
+                        }
+                        return defaultX
+                    }
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("CubeX", value)
+                            xInput.text = value.toFixed(1)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    id: xInput
+                    width: 70
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: xSlider.value.toFixed(1)
+                    validator: DoubleValidator {
+                        decimals: 1
+                        bottom: 1.0
+                        top: 100.0
+                        locale: "en_US"
+                    }
+                    onEditingFinished: {
+                        if (UM.ActiveTool) {
+                            var modified_text = text.replace(",", ".")
+                            var value = parseFloat(modified_text)
+                            if (!isNaN(value)) {
+                                UM.ActiveTool.setProperty("CubeX", value)
+                                xSlider.value = value
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Y dimension controls
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Depth (Y)")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                width: Math.ceil(contentWidth)
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+                
+                Slider {
+                    id: ySlider
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 1.0
+                    to: 100.0
+                    value: {
+                        if (UM.ActiveTool) {
+                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                            var presets = UM.ActiveTool.properties.getValue("Presets")
+                            if (currentPreset && presets && presets[currentPreset]) {
+                                return parseFloat(presets[currentPreset].y)
+                            }
+                            return UM.ActiveTool.properties.getValue("CubeY")
+                        }
+                        return defaultY
+                    }
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("CubeY", value)
+                            yInput.text = value.toFixed(1)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    id: yInput
+                    width: 70
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: ySlider.value.toFixed(1)
+                    validator: DoubleValidator {
+                        decimals: 1
+                        bottom: 1.0
+                        top: 100.0
+                        locale: "en_US"
+                    }
+                    onEditingFinished: {
+                        if (UM.ActiveTool) {
+                            var modified_text = text.replace(",", ".")
+                            var value = parseFloat(modified_text)
+                            if (!isNaN(value)) {
+                                UM.ActiveTool.setProperty("CubeY", value)
+                                ySlider.value = value
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Z dimension controls
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Height (Z)")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                width: Math.ceil(contentWidth)
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+                
+                Slider {
+                    id: zSlider
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 1.0
+                    to: 100.0
+                    value: {
+                        if (UM.ActiveTool) {
+                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
+                            var presets = UM.ActiveTool.properties.getValue("Presets")
+                            if (currentPreset && presets && presets[currentPreset]) {
+                                return parseFloat(presets[currentPreset].z)
+                            }
+                            return UM.ActiveTool.properties.getValue("CubeZ")
+                        }
+                        return defaultZ
+                    }
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("CubeZ", value)
+                            zInput.text = value.toFixed(1)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    id: zInput
+                    width: 70
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: zSlider.value.toFixed(1)
+                    validator: DoubleValidator {
+                        decimals: 1
+                        bottom: 1.0
+                        top: 100.0
+                        locale: "en_US"
+                    }
+                    onEditingFinished: {
+                        if (UM.ActiveTool) {
+                            var modified_text = text.replace(",", ".")
+                            var value = parseFloat(modified_text)
+                            if (!isNaN(value)) {
+                                UM.ActiveTool.setProperty("CubeZ", value)
+                                zSlider.value = value
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Support Angle controls
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Support Angle")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                width: Math.ceil(contentWidth)
+            }
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+                
+                Slider {
+                    id: angleSlider
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.0
+                    to: 90.0
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportAngle") : 45.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("SupportAngle", value)
+                            angleInput.text = value.toFixed(1)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    id: angleInput
+                    width: 70
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "°"
+                    text: angleSlider.value.toFixed(1)
+                    validator: DoubleValidator {
+                        decimals: 1
+                        bottom: 0.0
+                        top: 90.0
+                        locale: "en_US"
+                    }
+                    onEditingFinished: {
+                        if (UM.ActiveTool) {
+                            var modified_text = text.replace(",", ".")
+                            var value = parseFloat(modified_text)
+                            if (!isNaN(value)) {
+                                UM.ActiveTool.setProperty("SupportAngle", value)
+                                angleSlider.value = value
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Separator before support settings (hidden in wing mode)
+        Rectangle {
+            visible: base.currentSupportMode !== "wing"
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // Support Settings (editable; changing any value flips Density to Custom)
+        Label {
+            visible: base.currentSupportMode !== "wing"
+            text: catalog.i18nc("@label", "Support Settings:")
+            font: UM.Theme.getFont("default_bold")
+            color: UM.Theme.getColor("text")
+            renderType: Text.NativeRendering
+        }
+
+        Grid {
+            id: supportSettingsGrid
+            visible: base.currentSupportMode !== "wing"
+            columns: 2
+            columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
+            rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            verticalItemAlignment: Grid.AlignVCenter
+
+            Label {
+                text: catalog.i18nc("@label", "Pattern:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            ComboBox {
+                id: patternComboBox
+                width: 130
+                height: UM.Theme.getSize("setting_control").height
+                model: ["lines", "grid", "triangles", "concentric", "zigzag"]
+                currentIndex: {
+                    base.currentSupportMode  // dependency: re-read when preset loads
+                    if (UM.ActiveTool) {
+                        var i = model.indexOf(UM.ActiveTool.properties.getValue("SupportPattern"))
+                        if (i >= 0) return i
+                    }
+                    return 1
+                }
+                onActivated: {
+                    if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportPattern", model[currentIndex])
+                }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Infill Rate:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: "%"
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate").toString() : "15"
+                }
+                validator: IntValidator { bottom: 0; top: 100 }
+                onEditingFinished: {
+                    var v = parseInt(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportInfillRate", v)
+                }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Line Width:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: "mm"
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40"
+                }
+                validator: DoubleValidator { bottom: 0.1; top: 2.0; decimals: 2 }
+                onEditingFinished: {
+                    var v = parseFloat(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportLineWidth", v)
+                }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Wall Count:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: ""
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount").toString() : "1"
+                }
+                validator: IntValidator { bottom: 0; top: 5 }
+                onEditingFinished: {
+                    var v = parseInt(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportWallCount", v)
+                }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Interface:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportInterfaceEnable", checked) }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Roof:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportRoofEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportRoofEnable", checked) }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Bottom:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportBottomEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportBottomEnable", checked) }
+            }
+        }
         // Separator
         Rectangle {
             width: parent.width
@@ -945,476 +1413,6 @@ Item {
                 width: parent.width
                 height: 1
                 color: UM.Theme.getColor("lining")
-            }
-        }
-
-
-        // Size Presets Row (hidden in wing mode)
-        Row {
-            visible: base.currentSupportMode !== "wing"
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            Label {
-                height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Size Preset:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                verticalAlignment: Text.AlignVCenter
-                renderType: Text.NativeRendering
-            }
-
-            ComboBox {
-                id: presetComboBox
-                width: 120
-                height: UM.Theme.getSize("setting_control").height
-                model: {
-                    if (UM.ActiveTool && UM.ActiveTool.properties.getValue("Presets")) {
-                        var presets = Object.keys(UM.ActiveTool.properties.getValue("Presets"))
-                        if (UM.ActiveTool.properties.getValue("IsCustom")) {
-                            presets.push("Custom")
-                        }
-                        return presets
-                    }
-                    return []
-                }
-                currentIndex: {
-                    if (UM.ActiveTool) {
-                        if (UM.ActiveTool.properties.getValue("IsCustom")) {
-                            return model.indexOf("Custom")
-                        }
-                        var presetName = UM.ActiveTool.properties.getValue("CurrentPreset")
-                        var index = model.indexOf(presetName)
-                        return index >= 0 ? index : 0
-                    }
-                    return 0
-                }
-                onActivated: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.triggerActionWithData("applyPreset", currentText)
-                    }
-                }
-            }
-        }
-
-        // Save Preset Row - only visible in custom mode (and not wing mode)
-        Row {
-            id: savePresetRow
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && base.currentSupportMode !== "wing"
-            height: visible ? implicitHeight : 0
-
-            TextField {
-                id: presetNameField
-                width: 120
-                height: UM.Theme.getSize("setting_control").height
-                placeholderText: catalog.i18nc("@label", "Preset name")
-                validator: RegularExpressionValidator {
-                    regularExpression: /^[a-zA-Z0-9\- ]+$/
-                }
-            }
-
-            Button {
-                id: savePresetButton
-                width: 70
-                height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@button", "Save")
-                enabled: presetNameField.text.length > 0
-                onClicked: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.triggerActionWithData("savePreset", presetNameField.text)
-                        presetNameField.text = ""  // Clear the field after saving
-                    }
-                }
-            }
-        }
-
-
-        Grid {
-            id: mainGrid
-            visible: base.currentSupportMode !== "wing"
-            columns: 2
-            flow: Grid.LeftToRight
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            Label {
-                height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Width (X)")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                verticalAlignment: Text.AlignVCenter
-                renderType: Text.NativeRendering
-                width: Math.ceil(contentWidth)
-            }
-
-            Row {
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-                
-                Slider {
-                    id: xSlider
-                    width: 120
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 1.0
-                    to: 100.0
-                    value: {
-                        if (UM.ActiveTool) {
-                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
-                            var presets = UM.ActiveTool.properties.getValue("Presets")
-                            if (currentPreset && presets && presets[currentPreset]) {
-                                return parseFloat(presets[currentPreset].x)
-                            }
-                            return UM.ActiveTool.properties.getValue("CubeX")
-                        }
-                        return defaultX
-                    }
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("CubeX", value)
-                            xInput.text = value.toFixed(1)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    id: xInput
-                    width: 70
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "mm"
-                    text: xSlider.value.toFixed(1)
-                    validator: DoubleValidator {
-                        decimals: 1
-                        bottom: 1.0
-                        top: 100.0
-                        locale: "en_US"
-                    }
-                    onEditingFinished: {
-                        if (UM.ActiveTool) {
-                            var modified_text = text.replace(",", ".")
-                            var value = parseFloat(modified_text)
-                            if (!isNaN(value)) {
-                                UM.ActiveTool.setProperty("CubeX", value)
-                                xSlider.value = value
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Y dimension controls
-            Label {
-                height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Depth (Y)")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                verticalAlignment: Text.AlignVCenter
-                renderType: Text.NativeRendering
-                width: Math.ceil(contentWidth)
-            }
-
-            Row {
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-                
-                Slider {
-                    id: ySlider
-                    width: 120
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 1.0
-                    to: 100.0
-                    value: {
-                        if (UM.ActiveTool) {
-                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
-                            var presets = UM.ActiveTool.properties.getValue("Presets")
-                            if (currentPreset && presets && presets[currentPreset]) {
-                                return parseFloat(presets[currentPreset].y)
-                            }
-                            return UM.ActiveTool.properties.getValue("CubeY")
-                        }
-                        return defaultY
-                    }
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("CubeY", value)
-                            yInput.text = value.toFixed(1)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    id: yInput
-                    width: 70
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "mm"
-                    text: ySlider.value.toFixed(1)
-                    validator: DoubleValidator {
-                        decimals: 1
-                        bottom: 1.0
-                        top: 100.0
-                        locale: "en_US"
-                    }
-                    onEditingFinished: {
-                        if (UM.ActiveTool) {
-                            var modified_text = text.replace(",", ".")
-                            var value = parseFloat(modified_text)
-                            if (!isNaN(value)) {
-                                UM.ActiveTool.setProperty("CubeY", value)
-                                ySlider.value = value
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Z dimension controls
-            Label {
-                height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Height (Z)")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                verticalAlignment: Text.AlignVCenter
-                renderType: Text.NativeRendering
-                width: Math.ceil(contentWidth)
-            }
-
-            Row {
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-                
-                Slider {
-                    id: zSlider
-                    width: 120
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 1.0
-                    to: 100.0
-                    value: {
-                        if (UM.ActiveTool) {
-                            var currentPreset = UM.ActiveTool.properties.getValue("CurrentPreset")
-                            var presets = UM.ActiveTool.properties.getValue("Presets")
-                            if (currentPreset && presets && presets[currentPreset]) {
-                                return parseFloat(presets[currentPreset].z)
-                            }
-                            return UM.ActiveTool.properties.getValue("CubeZ")
-                        }
-                        return defaultZ
-                    }
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("CubeZ", value)
-                            zInput.text = value.toFixed(1)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    id: zInput
-                    width: 70
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "mm"
-                    text: zSlider.value.toFixed(1)
-                    validator: DoubleValidator {
-                        decimals: 1
-                        bottom: 1.0
-                        top: 100.0
-                        locale: "en_US"
-                    }
-                    onEditingFinished: {
-                        if (UM.ActiveTool) {
-                            var modified_text = text.replace(",", ".")
-                            var value = parseFloat(modified_text)
-                            if (!isNaN(value)) {
-                                UM.ActiveTool.setProperty("CubeZ", value)
-                                zSlider.value = value
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Support Angle controls
-            Label {
-                height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Support Angle")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                verticalAlignment: Text.AlignVCenter
-                renderType: Text.NativeRendering
-                width: Math.ceil(contentWidth)
-            }
-
-            Row {
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-                
-                Slider {
-                    id: angleSlider
-                    width: 120
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 0.0
-                    to: 90.0
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportAngle") : 45.0
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("SupportAngle", value)
-                            angleInput.text = value.toFixed(1)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    id: angleInput
-                    width: 70
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "°"
-                    text: angleSlider.value.toFixed(1)
-                    validator: DoubleValidator {
-                        decimals: 1
-                        bottom: 0.0
-                        top: 90.0
-                        locale: "en_US"
-                    }
-                    onEditingFinished: {
-                        if (UM.ActiveTool) {
-                            var modified_text = text.replace(",", ".")
-                            var value = parseFloat(modified_text)
-                            if (!isNaN(value)) {
-                                UM.ActiveTool.setProperty("SupportAngle", value)
-                                angleSlider.value = value
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Separator before support settings (hidden in wing mode)
-        Rectangle {
-            visible: base.currentSupportMode !== "wing"
-            width: parent.width
-            height: 1
-            color: UM.Theme.getColor("lining")
-        }
-
-        // Support Settings (editable; changing any value flips Density to Custom)
-        Label {
-            visible: base.currentSupportMode !== "wing"
-            text: catalog.i18nc("@label", "Support Settings:")
-            font: UM.Theme.getFont("default_bold")
-            color: UM.Theme.getColor("text")
-            renderType: Text.NativeRendering
-        }
-
-        Grid {
-            id: supportSettingsGrid
-            visible: base.currentSupportMode !== "wing"
-            columns: 2
-            columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
-            rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
-            verticalItemAlignment: Grid.AlignVCenter
-
-            Label {
-                text: catalog.i18nc("@label", "Pattern:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            ComboBox {
-                id: patternComboBox
-                width: 130
-                height: UM.Theme.getSize("setting_control").height
-                model: ["lines", "grid", "triangles", "concentric", "zigzag"]
-                currentIndex: {
-                    base.currentSupportMode  // dependency: re-read when preset loads
-                    if (UM.ActiveTool) {
-                        var i = model.indexOf(UM.ActiveTool.properties.getValue("SupportPattern"))
-                        if (i >= 0) return i
-                    }
-                    return 1
-                }
-                onActivated: {
-                    if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportPattern", model[currentIndex])
-                }
-            }
-
-            Label {
-                text: catalog.i18nc("@label", "Infill Rate:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            UM.TextFieldWithUnit {
-                width: 70; height: UM.Theme.getSize("setting_control").height
-                unit: "%"
-                text: {
-                    base.currentSupportMode
-                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate").toString() : "15"
-                }
-                validator: IntValidator { bottom: 0; top: 100 }
-                onEditingFinished: {
-                    var v = parseInt(text)
-                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportInfillRate", v)
-                }
-            }
-
-            Label {
-                text: catalog.i18nc("@label", "Line Width:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            UM.TextFieldWithUnit {
-                width: 70; height: UM.Theme.getSize("setting_control").height
-                unit: "mm"
-                text: {
-                    base.currentSupportMode
-                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40"
-                }
-                validator: DoubleValidator { bottom: 0.1; top: 2.0; decimals: 2 }
-                onEditingFinished: {
-                    var v = parseFloat(text)
-                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportLineWidth", v)
-                }
-            }
-
-            Label {
-                text: catalog.i18nc("@label", "Wall Count:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            UM.TextFieldWithUnit {
-                width: 70; height: UM.Theme.getSize("setting_control").height
-                unit: ""
-                text: {
-                    base.currentSupportMode
-                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount").toString() : "1"
-                }
-                validator: IntValidator { bottom: 0; top: 5 }
-                onEditingFinished: {
-                    var v = parseInt(text)
-                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportWallCount", v)
-                }
-            }
-
-            Label {
-                text: catalog.i18nc("@label", "Interface:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            CheckBox {
-                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable") }
-                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportInterfaceEnable", checked) }
-            }
-
-            Label {
-                text: catalog.i18nc("@label", "Roof:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            CheckBox {
-                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportRoofEnable") }
-                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportRoofEnable", checked) }
-            }
-
-            Label {
-                text: catalog.i18nc("@label", "Bottom:")
-                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-            }
-            CheckBox {
-                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportBottomEnable") }
-                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportBottomEnable", checked) }
             }
         }
         // Debug (collapsible)
