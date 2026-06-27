@@ -2328,8 +2328,14 @@ class MySupportImprover(Tool):
         return list(visited)
 
     def _buildFaceSpatialIndex(self, face_min_world: numpy.ndarray,
-                               face_max_world: numpy.ndarray) -> Optional[Tuple[Dict[Tuple[int, int], List[int]], float, float, float]]:
-        """Build a spatial index for faces based on XZ bounds."""
+                               face_max_world: numpy.ndarray,
+                               mask: Optional[numpy.ndarray] = None) -> Optional[Tuple[Dict[Tuple[int, int], List[int]], float, float, float]]:
+        """Build a spatial index for faces based on XZ bounds.
+
+        When ``mask`` is given, only faces where ``mask[face_id]`` is True are
+        indexed. Used to index supporting (non-dangling) faces only, so dangling
+        candidate faces are not mistaken for support below one another.
+        """
         if len(face_min_world) == 0:
             return None
 
@@ -2349,6 +2355,8 @@ class MySupportImprover(Tool):
         origin_z = float(min_z.min())
         grid: Dict[Tuple[int, int], List[int]] = defaultdict(list)
         for face_id in range(len(face_min_world)):
+            if mask is not None and not mask[face_id]:
+                continue
             min_cx = int((min_x[face_id] - origin_x) // cell_size)
             max_cx = int((max_x[face_id] - origin_x) // cell_size)
             min_cz = int((min_z[face_id] - origin_z) // cell_size)
@@ -2434,82 +2442,6 @@ class MySupportImprover(Tool):
                 queue.append(int(neighbor))
 
         return list(visited)
-
-    def _computeUnsupportedFaceMask(self, candidate_mask: numpy.ndarray,
-                                    face_min_world: numpy.ndarray,
-                                    face_max_world: numpy.ndarray,
-                                    support_mask: Optional[numpy.ndarray] = None,
-                                    support_clearance: float = 0.1) -> numpy.ndarray:
-        """Filter candidate faces to those with no supporting geometry below in their XZ footprint."""
-        if candidate_mask is None or len(candidate_mask) == 0:
-            return candidate_mask
-
-        face_count = len(face_min_world)
-        if face_count == 0:
-            return numpy.zeros(0, dtype=bool)
-
-        if support_mask is None:
-            support_mask = ~candidate_mask
-
-        min_x = face_min_world[:, 0]
-        max_x = face_max_world[:, 0]
-        min_y = face_min_world[:, 1]
-        max_y = face_max_world[:, 1]
-        min_z = face_min_world[:, 2]
-        max_z = face_max_world[:, 2]
-
-        x_span = float(max_x.max() - min_x.min())
-        z_span = float(max_z.max() - min_z.min())
-        max_span = max(x_span, z_span)
-        cell_size = 2.0
-        if max_span > 0.0:
-            cell_size = max(1.0, min(5.0, max_span / 40.0))
-
-        origin_x = float(min_x.min())
-        origin_z = float(min_z.min())
-        grid: Dict[Tuple[int, int], List[int]] = defaultdict(list)
-        support_ids = numpy.where(support_mask)[0]
-        for face_id in support_ids:
-            min_cx = int((min_x[face_id] - origin_x) // cell_size)
-            max_cx = int((max_x[face_id] - origin_x) // cell_size)
-            min_cz = int((min_z[face_id] - origin_z) // cell_size)
-            max_cz = int((max_z[face_id] - origin_z) // cell_size)
-            for cx in range(min_cx, max_cx + 1):
-                for cz in range(min_cz, max_cz + 1):
-                    grid[(cx, cz)].append(face_id)
-
-        candidate_ids = numpy.where(candidate_mask)[0]
-        unsupported = numpy.zeros(face_count, dtype=bool)
-        for face_id in candidate_ids:
-            y_threshold = float(min_y[face_id] - support_clearance)
-            min_x_i = float(min_x[face_id])
-            max_x_i = float(max_x[face_id])
-            min_z_i = float(min_z[face_id])
-            max_z_i = float(max_z[face_id])
-            min_cx = int((min_x_i - origin_x) // cell_size)
-            max_cx = int((max_x_i - origin_x) // cell_size)
-            min_cz = int((min_z_i - origin_z) // cell_size)
-            max_cz = int((max_z_i - origin_z) // cell_size)
-            supported = False
-            for cx in range(min_cx, max_cx + 1):
-                if supported:
-                    break
-                for cz in range(min_cz, max_cz + 1):
-                    for other in grid.get((cx, cz), []):
-                        if max_y[other] >= y_threshold:
-                            continue
-                        if max_x[other] < min_x_i or min_x[other] > max_x_i:
-                            continue
-                        if max_z[other] < min_z_i or min_z[other] > max_z_i:
-                            continue
-                        supported = True
-                        break
-                    if supported:
-                        break
-            if not supported:
-                unsupported[face_id] = True
-
-        return unsupported & candidate_mask
 
     def _mergeOverlappingFaceRegions(self, regions: List[List[int]]) -> List[List[int]]:
         """Merge face regions that overlap."""
@@ -2759,7 +2691,7 @@ class MySupportImprover(Tool):
             dangling_support_index = None
             if self._detect_dangling_vertices and numpy.any(dangling_candidate_mask):
                 self._updateProgress("Indexing mesh for dangling extent...", 40)
-                dangling_support_index = self._buildFaceSpatialIndex(face_min_world, face_max_world)
+                dangling_support_index = self._buildFaceSpatialIndex(face_min_world, face_max_world, ~dangling_candidate_mask)
             downward_face_ids = numpy.where(downward_mask)[0]
 
             face_lower_fraction = numpy.zeros(face_count, dtype=numpy.float32)
@@ -3056,7 +2988,7 @@ class MySupportImprover(Tool):
                                     height_cut,
                                 )
                     if dangling_vertex_regions_active:
-                        region_faces_full = region_faces
+                        region_faces_full = dangling_region_faces_full
                         dangling_faces_full = region_faces_full if region_faces_full else region_faces_for_bounds
                         region_face_mask = numpy.zeros(len(indices), dtype=bool)
                         region_face_mask[dangling_faces_full] = True
