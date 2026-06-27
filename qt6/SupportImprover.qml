@@ -1029,60 +1029,6 @@ Item {
         }
 
 
-        // Export Mode Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: exportModeCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ExportMode") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("ExportMode", checked)
-                        // Disable other modes when export mode is enabled
-                        if (checked) {
-                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
-                                UM.ActiveTool.setProperty("AutoDetect", false)
-                            }
-                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
-                                UM.ActiveTool.setProperty("SingleRegion", false)
-                            }
-                        }
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: exportModeCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: exportModeCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: exportModeCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Export Mode (click to save mesh data)")
-                    font: UM.Theme.getFont("default")
-                    color: exportModeCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: exportModeCheckbox.indicator.width + exportModeCheckbox.spacing
-                }
-            }
-        }
-
         Grid {
             id: mainGrid
             visible: base.currentSupportMode !== "wing"
@@ -1469,6 +1415,80 @@ Item {
             CheckBox {
                 checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportBottomEnable") }
                 onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportBottomEnable", checked) }
+            }
+        }
+        // Debug (collapsible)
+        Rectangle { width: parent.width; height: 1; color: UM.Theme.getColor("lining") }
+
+        Item {
+            width: debugHeaderLabel.implicitWidth
+            height: debugHeaderLabel.implicitHeight
+            Label {
+                id: debugHeaderLabel
+                text: (base.debugExpanded ? "▼ " : "▷ ") + catalog.i18nc("@label", "Debug")
+                font: UM.Theme.getFont("default_bold")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+            MouseArea { anchors.fill: parent; onClicked: base.debugExpanded = !base.debugExpanded }
+        }
+
+        Column {
+            visible: base.debugExpanded
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            width: parent.width
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: exportModeCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ExportMode") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ExportMode", checked)
+                            // Disable other modes when export mode is enabled
+                            if (checked) {
+                                if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                    UM.ActiveTool.setProperty("AutoDetect", false)
+                                }
+                                if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                    UM.ActiveTool.setProperty("SingleRegion", false)
+                                }
+                            }
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: exportModeCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: exportModeCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: exportModeCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Export Mesh Data")
+                        font: UM.Theme.getFont("default")
+                        color: exportModeCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: exportModeCheckbox.indicator.width + exportModeCheckbox.spacing
+                    }
+                }
             }
         }
     }
