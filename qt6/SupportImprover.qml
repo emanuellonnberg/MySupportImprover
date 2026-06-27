@@ -18,6 +18,18 @@ Item {
     property real defaultY: 3.0
     property real defaultZ: 3.0
 
+    // Remembers the last non-wing density so switching Wing -> Modifier Volume restores it
+    property string lastDensityMode: "structural"
+
+    // Reactive mirror of the SupportMode property. Cura's properties.getValue() is NOT a
+    // reactive QML binding, so visibility bindings must read this instead and we update it
+    // imperatively (dropdown handlers + onPropertiesChanged).
+    property string currentSupportMode: "structural"
+
+    // Collapsible-section expand state (experimental auto-detect + debug, collapsed by default)
+    property bool autoExpanded: false
+    property bool debugExpanded: false
+
     // Properties to track current values with proper default handling
     property real currentX: UM.ActiveTool && UM.ActiveTool.properties.cubeX !== undefined ? UM.ActiveTool.properties.cubeX : defaultX
     property real currentY: UM.ActiveTool && UM.ActiveTool.properties.cubeY !== undefined ? UM.ActiveTool.properties.cubeY : defaultY
@@ -27,6 +39,10 @@ Item {
         console.log("Support Improver QML loaded")
         if (UM.ActiveTool) {
             console.log("Tool active")
+            base.currentSupportMode = UM.ActiveTool.properties.getValue("SupportMode")
+            if (base.currentSupportMode !== "wing") {
+                base.lastDensityMode = base.currentSupportMode
+            }
             console.log("Initial values - X:", currentX, "Y:", currentY, "Z:", currentZ)
             
             // Only apply preset values if not using custom values
@@ -55,13 +71,13 @@ Item {
         // Remove anchors from Column
         width: mainGrid.width + UM.Theme.getSize("default_margin").width * 2
 
-        // Support Mode Selection
+        // Support Type Selection (Modifier Volume vs Wing)
         Row {
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
 
             Label {
                 height: UM.Theme.getSize("setting_control").height
-                text: catalog.i18nc("@label", "Support Mode:")
+                text: catalog.i18nc("@label", "Support Type:")
                 font: UM.Theme.getFont("default")
                 color: UM.Theme.getColor("text")
                 verticalAlignment: Text.AlignVCenter
@@ -69,42 +85,67 @@ Item {
             }
 
             ComboBox {
-                id: supportModeComboBox
+                id: supportTypeComboBox
                 width: 150
                 height: UM.Theme.getSize("setting_control").height
-                model: ["Structural (Dense)", "Stability (Minimal)", "Attached Wing", "Custom"]
-                currentIndex: {
-                    if (UM.ActiveTool) {
-                        var mode = UM.ActiveTool.properties.getValue("SupportMode")
-                        if (mode === "structural") return 0
-                        if (mode === "stability") return 1
-                        if (mode === "wing") return 2
-                        if (mode === "custom") return 3
-                    }
-                    return 0
-                }
+                model: [catalog.i18nc("@option", "Modifier Volume"), catalog.i18nc("@option", "Wing")]
+                currentIndex: base.currentSupportMode === "wing" ? 1 : 0
                 onActivated: {
-                    if (UM.ActiveTool) {
-                        var modeMap = ["structural", "stability", "wing", "custom"]
-                        UM.ActiveTool.setProperty("SupportMode", modeMap[currentIndex])
+                    if (!UM.ActiveTool) return
+                    if (currentIndex === 1) {
+                        UM.ActiveTool.setProperty("SupportMode", "wing")
+                        base.currentSupportMode = "wing"
+                    } else {
+                        UM.ActiveTool.setProperty("SupportMode", base.lastDensityMode)
+                        base.currentSupportMode = base.lastDensityMode
                     }
                 }
             }
         }
 
-        // Support Mode Description
+        // Density preset (only meaningful for Modifier Volume)
+        Row {
+            visible: base.currentSupportMode !== "wing"
+            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+            Label {
+                height: UM.Theme.getSize("setting_control").height
+                text: catalog.i18nc("@label", "Density:")
+                font: UM.Theme.getFont("default")
+                color: UM.Theme.getColor("text")
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+            }
+
+            ComboBox {
+                id: densityComboBox
+                width: 150
+                height: UM.Theme.getSize("setting_control").height
+                model: [catalog.i18nc("@option", "Structural (Dense)"), catalog.i18nc("@option", "Stability (Minimal)"), catalog.i18nc("@option", "Custom")]
+                currentIndex: {
+                    if (base.currentSupportMode === "structural") return 0
+                    if (base.currentSupportMode === "stability") return 1
+                    if (base.currentSupportMode === "custom") return 2
+                    return 0
+                }
+                onActivated: {
+                    if (!UM.ActiveTool) return
+                    var modeMap = ["structural", "stability", "custom"]
+                    base.lastDensityMode = modeMap[currentIndex]
+                    UM.ActiveTool.setProperty("SupportMode", modeMap[currentIndex])
+                    base.currentSupportMode = modeMap[currentIndex]
+                }
+            }
+        }
+
+        // Support Mode Description (from Python, single source of truth)
         Label {
+            visible: base.currentSupportMode !== "wing"
             width: parent.width
             height: UM.Theme.getSize("setting_control").height
             text: {
-                if (UM.ActiveTool) {
-                    var mode = UM.ActiveTool.properties.getValue("SupportMode")
-                    if (mode === "structural") return "Dense support for load-bearing areas"
-                    if (mode === "stability") return "Minimal support for edge stabilization"
-                    if (mode === "wing") return "Attached wing extending to build plate"
-                    if (mode === "custom") return "Custom support settings"
-                }
-                return ""
+                base.currentSupportMode  // dependency so it re-reads when mode changes
+                return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportModeDescription") : ""
             }
             font: UM.Theme.getFont("default_italic")
             color: UM.Theme.getColor("text_inactive")
@@ -112,323 +153,10 @@ Item {
             renderType: Text.NativeRendering
         }
 
-        // Separator
-        Rectangle {
-            width: parent.width
-            height: 1
-            color: UM.Theme.getColor("lining")
-        }
-
-        // =====================================================
-        // Automatic Overhang Detection Section
-        // =====================================================
-        Column {
-            id: overhangDetectionSection
-            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
-            width: parent.width
-
-            Label {
-                text: catalog.i18nc("@label", "Automatic Detection:")
-                font: UM.Theme.getFont("default_bold")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
-            }
-
-            // Overhang Threshold
-            Row {
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-                Label {
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@label", "Detection Angle:")
-                    font: UM.Theme.getFont("default")
-                    color: UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    renderType: Text.NativeRendering
-                    width: 70
-                }
-
-                Slider {
-                    id: overhangThresholdSlider
-                    width: 100
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 20.0
-                    to: 70.0
-                    stepSize: 5.0
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("OverhangThreshold") : 45.0
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("OverhangThreshold", value)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    width: 55
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "°"
-                    text: overhangThresholdSlider.value.toFixed(0)
-                    validator: DoubleValidator { bottom: 20; top: 70; decimals: 0 }
-                    onEditingFinished: {
-                        var value = parseFloat(text)
-                        if (!isNaN(value) && UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("OverhangThreshold", value)
-                            overhangThresholdSlider.value = value
-                        }
-                    }
-                }
-            }
-
-            // Detection Buttons Row
-            Row {
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-                Button {
-                    id: detectOverhangsButton
-                    width: 120
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@button", "Detect Overhangs")
-                    onClicked: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.triggerAction("detectOverhangsOnSelection")
-                        }
-                    }
-                }
-
-                Button {
-                    id: createSupportButton
-                    width: 120
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@button", "Create Support")
-                    enabled: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                    onClicked: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.triggerAction("createSupportForOverhangs")
-                        }
-                    }
-                }
-            }
-
-            // Detection Status
-            Label {
-                id: detectionStatusLabel
-                width: parent.width
-                height: UM.Theme.getSize("setting_control").height
-                text: {
-                    if (UM.ActiveTool) {
-                        var count = UM.ActiveTool.properties.getValue("DetectedOverhangCount")
-                        if (count === 0) {
-                            return "No overhangs detected. Select a model and click Detect."
-                        } else if (count === 1) {
-                            return "Detected 1 overhang region"
-                        } else {
-                            return "Detected " + count + " overhang regions"
-                        }
-                    }
-                    return ""
-                }
-                font: UM.Theme.getFont("default")
-                color: {
-                    if (UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0) {
-                        return UM.Theme.getColor("primary")
-                    }
-                    return UM.Theme.getColor("text_inactive")
-                }
-                verticalAlignment: Text.AlignVCenter
-                renderType: Text.NativeRendering
-                wrapMode: Text.WordWrap
-            }
-
-            // Custom Support Mesh Section (Phase 3 + 4)
-            Label {
-                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                text: catalog.i18nc("@label", "Custom Support Mesh:")
-                font: UM.Theme.getFont("default_bold")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
-            }
-
-            // Column Radius
-            Row {
-                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-                Label {
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@label", "Column Radius:")
-                    font: UM.Theme.getFont("default")
-                    color: UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    renderType: Text.NativeRendering
-                    width: 85
-                }
-
-                Slider {
-                    id: columnRadiusSlider
-                    width: 80
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 0.5
-                    to: 5.0
-                    stepSize: 0.5
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ColumnRadius") : 2.0
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("ColumnRadius", value)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    width: 50
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "mm"
-                    text: columnRadiusSlider.value.toFixed(1)
-                    validator: DoubleValidator { bottom: 0.5; top: 5.0; decimals: 1 }
-                    onEditingFinished: {
-                        var value = parseFloat(text)
-                        if (!isNaN(value) && UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("ColumnRadius", value)
-                            columnRadiusSlider.value = value
-                        }
-                    }
-                }
-            }
-
-            // Column Taper
-            Row {
-                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-                Label {
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@label", "Column Taper:")
-                    font: UM.Theme.getFont("default")
-                    color: UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    renderType: Text.NativeRendering
-                    width: 85
-                }
-
-                Slider {
-                    id: columnTaperSlider
-                    width: 80
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 0.2
-                    to: 1.0
-                    stepSize: 0.1
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ColumnTaper") : 0.6
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("ColumnTaper", value)
-                        }
-                    }
-                }
-
-                Label {
-                    height: UM.Theme.getSize("setting_control").height
-                    text: Math.round(columnTaperSlider.value * 100) + "%"
-                    font: UM.Theme.getFont("default")
-                    color: UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    renderType: Text.NativeRendering
-                    width: 40
-                }
-            }
-
-            // Rail Width
-            Row {
-                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-                Label {
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@label", "Rail Width:")
-                    font: UM.Theme.getFont("default")
-                    color: UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    renderType: Text.NativeRendering
-                    width: 85
-                }
-
-                Slider {
-                    id: railWidthSlider
-                    width: 80
-                    height: UM.Theme.getSize("setting_control").height
-                    from: 0.3
-                    to: 3.0
-                    stepSize: 0.1
-                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("RailWidth") : 0.8
-                    onValueChanged: {
-                        if (UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("RailWidth", value)
-                        }
-                    }
-                }
-
-                UM.TextFieldWithUnit {
-                    width: 50
-                    height: UM.Theme.getSize("setting_control").height
-                    unit: "mm"
-                    text: railWidthSlider.value.toFixed(1)
-                    validator: DoubleValidator { bottom: 0.3; top: 3.0; decimals: 1 }
-                    onEditingFinished: {
-                        var value = parseFloat(text)
-                        if (!isNaN(value) && UM.ActiveTool) {
-                            UM.ActiveTool.setProperty("RailWidth", value)
-                            railWidthSlider.value = value
-                        }
-                    }
-                }
-            }
-
-            Row {
-                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-                ComboBox {
-                    id: customSupportTypeComboBox
-                    width: 100
-                    height: UM.Theme.getSize("setting_control").height
-                    model: ["Auto", "Columns Only", "Rails Only"]
-                    currentIndex: 0
-                }
-
-                Button {
-                    id: createCustomMeshButton
-                    width: 130
-                    height: UM.Theme.getSize("setting_control").height
-                    text: catalog.i18nc("@button", "Create Custom Mesh")
-                    onClicked: {
-                        if (UM.ActiveTool) {
-                            var typeMap = ["auto", "tip_column", "edge_rail"]
-                            UM.ActiveTool.triggerActionWithData("createCustomSupportMeshV2", typeMap[customSupportTypeComboBox.currentIndex])
-                        }
-                    }
-                }
-            }
-
-            Label {
-                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
-                width: parent.width
-                text: "Columns for tips, rails for edges. Supports model-to-model."
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
-                renderType: Text.NativeRendering
-                wrapMode: Text.WordWrap
-            }
-
-            // Separator after detection section
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: UM.Theme.getColor("lining")
-            }
-        }
-
         // Wing Settings (only visible in wing mode)
         Column {
             id: wingSettingsColumn
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") === "wing"
+            visible: base.currentSupportMode === "wing"
             spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
             width: parent.width
 
@@ -699,7 +427,7 @@ Item {
 
         // Size Presets Row (hidden in wing mode)
         Row {
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
 
             Label {
@@ -748,7 +476,7 @@ Item {
         Row {
             id: savePresetRow
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("IsCustom") && base.currentSupportMode !== "wing"
             height: visible ? implicitHeight : 0
 
             TextField {
@@ -776,261 +504,10 @@ Item {
             }
         }
 
-        // Single Region Mode Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: singleRegionCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SingleRegion") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("SingleRegion", checked)
-                        // Disable other modes when single region is enabled
-                        if (checked) {
-                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
-                                UM.ActiveTool.setProperty("AutoDetect", false)
-                            }
-                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
-                                UM.ActiveTool.setProperty("ExportMode", false)
-                            }
-                        }
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: singleRegionCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: singleRegionCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: singleRegionCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Single Region (Fast)")
-                    font: UM.Theme.getFont("default")
-                    color: singleRegionCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: singleRegionCheckbox.indicator.width + singleRegionCheckbox.spacing
-                }
-            }
-        }
-
-        // Auto Detect All Regions Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: autoDetectCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("AutoDetect") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("AutoDetect", checked)
-                        // Disable other modes when auto-detect is enabled
-                        if (checked) {
-                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
-                                UM.ActiveTool.setProperty("SingleRegion", false)
-                            }
-                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
-                                UM.ActiveTool.setProperty("ExportMode", false)
-                            }
-                        }
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: autoDetectCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: autoDetectCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: autoDetectCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Auto-Detect All Regions")
-                    font: UM.Theme.getFont("default")
-                    color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: autoDetectCheckbox.indicator.width + autoDetectCheckbox.spacing
-                }
-            }
-        }
-
-        // Sharp Feature Detection Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: sharpFeaturesCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectSharpFeatures") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("DetectSharpFeatures", checked)
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: sharpFeaturesCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: sharpFeaturesCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: sharpFeaturesCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Detect Sharp Features (auto-detect mode)")
-                    font: UM.Theme.getFont("default")
-                    color: sharpFeaturesCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: sharpFeaturesCheckbox.indicator.width + sharpFeaturesCheckbox.spacing
-                }
-            }
-        }
-
-        // Dangling Vertex Detection Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: danglingVertexCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectDanglingVertices") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("DetectDanglingVertices", checked)
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: danglingVertexCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: danglingVertexCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: danglingVertexCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Detect Dangling Vertices (auto-detect mode)")
-                    font: UM.Theme.getFont("default")
-                    color: danglingVertexCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: danglingVertexCheckbox.indicator.width + danglingVertexCheckbox.spacing
-                }
-            }
-        }
-
-        // Export Mode Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: exportModeCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ExportMode") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("ExportMode", checked)
-                        // Disable other modes when export mode is enabled
-                        if (checked) {
-                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
-                                UM.ActiveTool.setProperty("AutoDetect", false)
-                            }
-                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
-                                UM.ActiveTool.setProperty("SingleRegion", false)
-                            }
-                        }
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: exportModeCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: exportModeCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: exportModeCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Export Mode (click to save mesh data)")
-                    font: UM.Theme.getFont("default")
-                    color: exportModeCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: exportModeCheckbox.indicator.width + exportModeCheckbox.spacing
-                }
-            }
-        }
 
         Grid {
             id: mainGrid
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             columns: 2
             flow: Grid.LeftToRight
             spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
@@ -1283,92 +760,733 @@ Item {
 
         // Separator before support settings (hidden in wing mode)
         Rectangle {
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             width: parent.width
             height: 1
             color: UM.Theme.getColor("lining")
         }
 
-        // Support Settings Info Header (hidden in wing mode)
+        // Support Settings (editable; changing any value flips Density to Custom)
         Label {
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
-            text: catalog.i18nc("@label", "Support Settings (applied to volume):")
+            visible: base.currentSupportMode !== "wing"
+            text: catalog.i18nc("@label", "Support Settings:")
             font: UM.Theme.getFont("default_bold")
             color: UM.Theme.getColor("text")
             renderType: Text.NativeRendering
         }
 
-        // Support Settings Display Grid (hidden in wing mode)
         Grid {
             id: supportSettingsGrid
-            visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportMode") !== "wing"
+            visible: base.currentSupportMode !== "wing"
             columns: 2
             columnSpacing: Math.round(UM.Theme.getSize("default_margin").width)
             rowSpacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            verticalItemAlignment: Grid.AlignVCenter
 
             Label {
                 text: catalog.i18nc("@label", "Pattern:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportPattern") : "grid"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            ComboBox {
+                id: patternComboBox
+                width: 130
+                height: UM.Theme.getSize("setting_control").height
+                model: ["lines", "grid", "triangles", "concentric", "zigzag"]
+                currentIndex: {
+                    base.currentSupportMode  // dependency: re-read when preset loads
+                    if (UM.ActiveTool) {
+                        var i = model.indexOf(UM.ActiveTool.properties.getValue("SupportPattern"))
+                        if (i >= 0) return i
+                    }
+                    return 1
+                }
+                onActivated: {
+                    if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportPattern", model[currentIndex])
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Infill Rate:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: (UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate") : 15) + "%"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: "%"
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportInfillRate").toString() : "15"
+                }
+                validator: IntValidator { bottom: 0; top: 100 }
+                onEditingFinished: {
+                    var v = parseInt(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportInfillRate", v)
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Line Width:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: (UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40") + " mm"
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: "mm"
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportLineWidth").toFixed(2) : "0.40"
+                }
+                validator: DoubleValidator { bottom: 0.1; top: 2.0; decimals: 2 }
+                onEditingFinished: {
+                    var v = parseFloat(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportLineWidth", v)
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Wall Count:")
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text_inactive")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
             }
-            Label {
-                text: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount") : 1
-                font: UM.Theme.getFont("default")
-                color: UM.Theme.getColor("text")
-                renderType: Text.NativeRendering
+            UM.TextFieldWithUnit {
+                width: 70; height: UM.Theme.getSize("setting_control").height
+                unit: ""
+                text: {
+                    base.currentSupportMode
+                    return UM.ActiveTool ? UM.ActiveTool.properties.getValue("SupportWallCount").toString() : "1"
+                }
+                validator: IntValidator { bottom: 0; top: 5 }
+                onEditingFinished: {
+                    var v = parseInt(text)
+                    if (!isNaN(v) && UM.ActiveTool) UM.ActiveTool.setProperty("SupportWallCount", v)
+                }
             }
 
             Label {
                 text: catalog.i18nc("@label", "Interface:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportInterfaceEnable", checked) }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Roof:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportRoofEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportRoofEnable", checked) }
+            }
+
+            Label {
+                text: catalog.i18nc("@label", "Bottom:")
+                font: UM.Theme.getFont("default"); color: UM.Theme.getColor("text_inactive")
+                renderType: Text.NativeRendering
+            }
+            CheckBox {
+                checked: { base.currentSupportMode; return UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportBottomEnable") }
+                onToggled: { if (UM.ActiveTool) UM.ActiveTool.setProperty("SupportBottomEnable", checked) }
+            }
+        }
+        // Separator
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: UM.Theme.getColor("lining")
+        }
+
+        // =====================================================
+        // Automatic Detection (experimental) — collapsible
+        // =====================================================
+        Item {
+            width: autoHeaderLabel.implicitWidth
+            height: autoHeaderLabel.implicitHeight
+            Label {
+                id: autoHeaderLabel
+                text: (base.autoExpanded ? "▼ " : "▷ ") + catalog.i18nc("@label", "Automatic Detection (experimental)")
+                font: UM.Theme.getFont("default_bold")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+            MouseArea { anchors.fill: parent; onClicked: base.autoExpanded = !base.autoExpanded }
+        }
+
+        Column {
+            id: overhangDetectionSection
+            visible: base.autoExpanded
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            width: parent.width
+
+            // Overhang Threshold
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Detection Angle:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 70
+                }
+
+                Slider {
+                    id: overhangThresholdSlider
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 20.0
+                    to: 70.0
+                    stepSize: 5.0
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("OverhangThreshold") : 45.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("OverhangThreshold", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 55
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "°"
+                    text: overhangThresholdSlider.value.toFixed(0)
+                    validator: DoubleValidator { bottom: 20; top: 70; decimals: 0 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("OverhangThreshold", value)
+                            overhangThresholdSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Detection Buttons Row
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Button {
+                    id: detectOverhangsButton
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@button", "Detect Overhangs")
+                    onClicked: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.triggerAction("detectOverhangsOnSelection")
+                        }
+                    }
+                }
+
+                Button {
+                    id: createSupportButton
+                    width: 120
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@button", "Create Support")
+                    enabled: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                    onClicked: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.triggerAction("createSupportForOverhangs")
+                        }
+                    }
+                }
+            }
+
+            // Detection Status
+            Label {
+                id: detectionStatusLabel
+                width: parent.width
+                height: UM.Theme.getSize("setting_control").height
+                text: {
+                    if (UM.ActiveTool) {
+                        var count = UM.ActiveTool.properties.getValue("DetectedOverhangCount")
+                        if (count === 0) {
+                            return "No overhangs detected. Select a model and click Detect."
+                        } else if (count === 1) {
+                            return "Detected 1 overhang region"
+                        } else {
+                            return "Detected " + count + " overhang regions"
+                        }
+                    }
+                    return ""
+                }
+                font: UM.Theme.getFont("default")
+                color: {
+                    if (UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0) {
+                        return UM.Theme.getColor("primary")
+                    }
+                    return UM.Theme.getColor("text_inactive")
+                }
+                verticalAlignment: Text.AlignVCenter
+                renderType: Text.NativeRendering
+                wrapMode: Text.WordWrap
+            }
+
+            // Single Region Mode Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: singleRegionCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SingleRegion") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("SingleRegion", checked)
+                            // Disable other modes when single region is enabled
+                            if (checked) {
+                                if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                    UM.ActiveTool.setProperty("AutoDetect", false)
+                                }
+                                if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                    UM.ActiveTool.setProperty("ExportMode", false)
+                                }
+                            }
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: singleRegionCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: singleRegionCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: singleRegionCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Single Region (Fast)")
+                        font: UM.Theme.getFont("default")
+                        color: singleRegionCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: singleRegionCheckbox.indicator.width + singleRegionCheckbox.spacing
+                    }
+                }
+            }
+    
+            // Auto Detect All Regions Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: autoDetectCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("AutoDetect") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("AutoDetect", checked)
+                            // Disable other modes when auto-detect is enabled
+                            if (checked) {
+                                if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                    UM.ActiveTool.setProperty("SingleRegion", false)
+                                }
+                                if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                    UM.ActiveTool.setProperty("ExportMode", false)
+                                }
+                            }
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: autoDetectCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: autoDetectCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: autoDetectCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Auto-Detect All Regions")
+                        font: UM.Theme.getFont("default")
+                        color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: autoDetectCheckbox.indicator.width + autoDetectCheckbox.spacing
+                    }
+                }
+            }
+    
+            // Sharp Feature Detection Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: sharpFeaturesCheckbox
+                    enabled: autoDetectCheckbox.checked
+                    opacity: enabled ? 1.0 : 0.4
+                    leftPadding: UM.Theme.getSize("default_margin").width * 2
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectSharpFeatures") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("DetectSharpFeatures", checked)
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: sharpFeaturesCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: sharpFeaturesCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: sharpFeaturesCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Detect Sharp Features (auto-detect mode)")
+                        font: UM.Theme.getFont("default")
+                        color: sharpFeaturesCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: sharpFeaturesCheckbox.indicator.width + sharpFeaturesCheckbox.spacing
+                    }
+                }
+            }
+    
+            // Dangling Vertex Detection Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: danglingVertexCheckbox
+                    enabled: autoDetectCheckbox.checked
+                    opacity: enabled ? 1.0 : 0.4
+                    leftPadding: UM.Theme.getSize("default_margin").width * 2
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectDanglingVertices") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("DetectDanglingVertices", checked)
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: danglingVertexCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: danglingVertexCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: danglingVertexCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Detect Dangling Vertices (auto-detect mode)")
+                        font: UM.Theme.getFont("default")
+                        color: danglingVertexCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: danglingVertexCheckbox.indicator.width + danglingVertexCheckbox.spacing
+                    }
+                }
+            }
+            // Custom Support Mesh Section (Phase 3 + 4)
+            Label {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                text: catalog.i18nc("@label", "Custom Support Mesh:")
+                font: UM.Theme.getFont("default_bold")
+                color: UM.Theme.getColor("text")
+                renderType: Text.NativeRendering
+            }
+
+            // Column Radius
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Column Radius:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 85
+                }
+
+                Slider {
+                    id: columnRadiusSlider
+                    width: 80
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.5
+                    to: 5.0
+                    stepSize: 0.5
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ColumnRadius") : 2.0
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ColumnRadius", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 50
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: columnRadiusSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 0.5; top: 5.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ColumnRadius", value)
+                            columnRadiusSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            // Column Taper
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Column Taper:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 85
+                }
+
+                Slider {
+                    id: columnTaperSlider
+                    width: 80
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.2
+                    to: 1.0
+                    stepSize: 0.1
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ColumnTaper") : 0.6
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ColumnTaper", value)
+                        }
+                    }
+                }
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: Math.round(columnTaperSlider.value * 100) + "%"
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 40
+                }
+            }
+
+            // Rail Width
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                Label {
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@label", "Rail Width:")
+                    font: UM.Theme.getFont("default")
+                    color: UM.Theme.getColor("text")
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.NativeRendering
+                    width: 85
+                }
+
+                Slider {
+                    id: railWidthSlider
+                    width: 80
+                    height: UM.Theme.getSize("setting_control").height
+                    from: 0.3
+                    to: 3.0
+                    stepSize: 0.1
+                    value: UM.ActiveTool ? UM.ActiveTool.properties.getValue("RailWidth") : 0.8
+                    onValueChanged: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("RailWidth", value)
+                        }
+                    }
+                }
+
+                UM.TextFieldWithUnit {
+                    width: 50
+                    height: UM.Theme.getSize("setting_control").height
+                    unit: "mm"
+                    text: railWidthSlider.value.toFixed(1)
+                    validator: DoubleValidator { bottom: 0.3; top: 3.0; decimals: 1 }
+                    onEditingFinished: {
+                        var value = parseFloat(text)
+                        if (!isNaN(value) && UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("RailWidth", value)
+                            railWidthSlider.value = value
+                        }
+                    }
+                }
+            }
+
+            Row {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+
+                ComboBox {
+                    id: customSupportTypeComboBox
+                    width: 100
+                    height: UM.Theme.getSize("setting_control").height
+                    model: ["Auto", "Columns Only", "Rails Only"]
+                    currentIndex: 0
+                }
+
+                Button {
+                    id: createCustomMeshButton
+                    width: 130
+                    height: UM.Theme.getSize("setting_control").height
+                    text: catalog.i18nc("@button", "Create Custom Mesh")
+                    onClicked: {
+                        if (UM.ActiveTool) {
+                            var typeMap = ["auto", "tip_column", "edge_rail"]
+                            UM.ActiveTool.triggerActionWithData("createCustomSupportMeshV2", typeMap[customSupportTypeComboBox.currentIndex])
+                        }
+                    }
+                }
+            }
+
+            Label {
+                visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
+                width: parent.width
+                text: "Columns for tips, rails for edges. Supports model-to-model."
                 font: UM.Theme.getFont("default")
                 color: UM.Theme.getColor("text_inactive")
                 renderType: Text.NativeRendering
+                wrapMode: Text.WordWrap
             }
+
+            // Separator after detection section
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: UM.Theme.getColor("lining")
+            }
+        }
+        // Debug (collapsible)
+        Rectangle { width: parent.width; height: 1; color: UM.Theme.getColor("lining") }
+
+        Item {
+            width: debugHeaderLabel.implicitWidth
+            height: debugHeaderLabel.implicitHeight
             Label {
-                text: (UM.ActiveTool && UM.ActiveTool.properties.getValue("SupportInterfaceEnable")) ? "Enabled" : "Disabled"
-                font: UM.Theme.getFont("default")
+                id: debugHeaderLabel
+                text: (base.debugExpanded ? "▼ " : "▷ ") + catalog.i18nc("@label", "Debug")
+                font: UM.Theme.getFont("default_bold")
                 color: UM.Theme.getColor("text")
                 renderType: Text.NativeRendering
+            }
+            MouseArea { anchors.fill: parent; onClicked: base.debugExpanded = !base.debugExpanded }
+        }
+
+        Column {
+            visible: base.debugExpanded
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            width: parent.width
+
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: exportModeCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("ExportMode") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("ExportMode", checked)
+                            // Disable other modes when export mode is enabled
+                            if (checked) {
+                                if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                    UM.ActiveTool.setProperty("AutoDetect", false)
+                                }
+                                if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                    UM.ActiveTool.setProperty("SingleRegion", false)
+                                }
+                            }
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: exportModeCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: exportModeCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: exportModeCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Export Mesh Data")
+                        font: UM.Theme.getFont("default")
+                        color: exportModeCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: exportModeCheckbox.indicator.width + exportModeCheckbox.spacing
+                    }
+                }
             }
         }
     }
@@ -1387,6 +1505,8 @@ Item {
                 if (UM.ActiveTool.properties.cubeZ !== undefined) {
                     base.currentZ = UM.ActiveTool.properties.cubeZ
                 }
+                // Keep the reactive mirror in sync (e.g. when editing a setting flips mode -> custom)
+                base.currentSupportMode = UM.ActiveTool.properties.getValue("SupportMode")
             }
         }
     }
