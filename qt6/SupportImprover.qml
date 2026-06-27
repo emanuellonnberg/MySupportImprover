@@ -26,6 +26,10 @@ Item {
     // imperatively (dropdown handlers + onPropertiesChanged).
     property string currentSupportMode: "structural"
 
+    // Collapsible-section expand state (experimental auto-detect + debug, collapsed by default)
+    property bool autoExpanded: false
+    property bool debugExpanded: false
+
     // Properties to track current values with proper default handling
     property real currentX: UM.ActiveTool && UM.ActiveTool.properties.cubeX !== undefined ? UM.ActiveTool.properties.cubeX : defaultX
     property real currentY: UM.ActiveTool && UM.ActiveTool.properties.cubeY !== undefined ? UM.ActiveTool.properties.cubeY : defaultY
@@ -429,19 +433,26 @@ Item {
         }
 
         // =====================================================
-        // Automatic Overhang Detection Section
+        // Automatic Detection (experimental) — collapsible
         // =====================================================
-        Column {
-            id: overhangDetectionSection
-            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
-            width: parent.width
-
+        Item {
+            width: autoHeaderLabel.implicitWidth
+            height: autoHeaderLabel.implicitHeight
             Label {
-                text: catalog.i18nc("@label", "Automatic Detection:")
+                id: autoHeaderLabel
+                text: (base.autoExpanded ? "▼ " : "▷ ") + catalog.i18nc("@label", "Automatic Detection (experimental)")
                 font: UM.Theme.getFont("default_bold")
                 color: UM.Theme.getColor("text")
                 renderType: Text.NativeRendering
             }
+            MouseArea { anchors.fill: parent; onClicked: base.autoExpanded = !base.autoExpanded }
+        }
+
+        Column {
+            id: overhangDetectionSection
+            visible: base.autoExpanded
+            spacing: Math.round(UM.Theme.getSize("default_margin").height / 2)
+            width: parent.width
 
             // Overhang Threshold
             Row {
@@ -548,6 +559,209 @@ Item {
                 wrapMode: Text.WordWrap
             }
 
+            // Single Region Mode Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: singleRegionCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SingleRegion") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("SingleRegion", checked)
+                            // Disable other modes when single region is enabled
+                            if (checked) {
+                                if (UM.ActiveTool.properties.getValue("AutoDetect")) {
+                                    UM.ActiveTool.setProperty("AutoDetect", false)
+                                }
+                                if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                    UM.ActiveTool.setProperty("ExportMode", false)
+                                }
+                            }
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: singleRegionCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: singleRegionCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: singleRegionCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Single Region (Fast)")
+                        font: UM.Theme.getFont("default")
+                        color: singleRegionCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: singleRegionCheckbox.indicator.width + singleRegionCheckbox.spacing
+                    }
+                }
+            }
+    
+            // Auto Detect All Regions Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: autoDetectCheckbox
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("AutoDetect") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("AutoDetect", checked)
+                            // Disable other modes when auto-detect is enabled
+                            if (checked) {
+                                if (UM.ActiveTool.properties.getValue("SingleRegion")) {
+                                    UM.ActiveTool.setProperty("SingleRegion", false)
+                                }
+                                if (UM.ActiveTool.properties.getValue("ExportMode")) {
+                                    UM.ActiveTool.setProperty("ExportMode", false)
+                                }
+                            }
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: autoDetectCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: autoDetectCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: autoDetectCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Auto-Detect All Regions")
+                        font: UM.Theme.getFont("default")
+                        color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: autoDetectCheckbox.indicator.width + autoDetectCheckbox.spacing
+                    }
+                }
+            }
+    
+            // Sharp Feature Detection Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: sharpFeaturesCheckbox
+                    enabled: autoDetectCheckbox.checked
+                    opacity: enabled ? 1.0 : 0.4
+                    leftPadding: UM.Theme.getSize("default_margin").width * 2
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectSharpFeatures") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("DetectSharpFeatures", checked)
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: sharpFeaturesCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: sharpFeaturesCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: sharpFeaturesCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Detect Sharp Features (auto-detect mode)")
+                        font: UM.Theme.getFont("default")
+                        color: sharpFeaturesCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: sharpFeaturesCheckbox.indicator.width + sharpFeaturesCheckbox.spacing
+                    }
+                }
+            }
+    
+            // Dangling Vertex Detection Checkbox
+            Row {
+                spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
+    
+                CheckBox {
+                    id: danglingVertexCheckbox
+                    enabled: autoDetectCheckbox.checked
+                    opacity: enabled ? 1.0 : 0.4
+                    leftPadding: UM.Theme.getSize("default_margin").width * 2
+                    height: UM.Theme.getSize("setting_control").height
+                    checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectDanglingVertices") : false
+                    onToggled: {
+                        if (UM.ActiveTool) {
+                            UM.ActiveTool.setProperty("DetectDanglingVertices", checked)
+                        }
+                    }
+    
+                    indicator: Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        x: danglingVertexCheckbox.leftPadding
+                        y: parent.height / 2 - height / 2
+                        radius: 3
+                        border.color: danglingVertexCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        border.width: 1
+                        color: "transparent"
+    
+                        Rectangle {
+                            width: 12
+                            height: 12
+                            x: 4
+                            y: 4
+                            radius: 2
+                            color: UM.Theme.getColor("primary")
+                            visible: danglingVertexCheckbox.checked
+                        }
+                    }
+    
+                    contentItem: Label {
+                        text: catalog.i18nc("@label", "Detect Dangling Vertices (auto-detect mode)")
+                        font: UM.Theme.getFont("default")
+                        color: danglingVertexCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: danglingVertexCheckbox.indicator.width + danglingVertexCheckbox.spacing
+                    }
+                }
+            }
             // Custom Support Mesh Section (Phase 3 + 4)
             Label {
                 visible: UM.ActiveTool && UM.ActiveTool.properties.getValue("DetectedOverhangCount") > 0
@@ -814,203 +1028,6 @@ Item {
             }
         }
 
-        // Single Region Mode Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: singleRegionCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("SingleRegion") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("SingleRegion", checked)
-                        // Disable other modes when single region is enabled
-                        if (checked) {
-                            if (UM.ActiveTool.properties.getValue("AutoDetect")) {
-                                UM.ActiveTool.setProperty("AutoDetect", false)
-                            }
-                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
-                                UM.ActiveTool.setProperty("ExportMode", false)
-                            }
-                        }
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: singleRegionCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: singleRegionCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: singleRegionCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Single Region (Fast)")
-                    font: UM.Theme.getFont("default")
-                    color: singleRegionCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: singleRegionCheckbox.indicator.width + singleRegionCheckbox.spacing
-                }
-            }
-        }
-
-        // Auto Detect All Regions Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: autoDetectCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("AutoDetect") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("AutoDetect", checked)
-                        // Disable other modes when auto-detect is enabled
-                        if (checked) {
-                            if (UM.ActiveTool.properties.getValue("SingleRegion")) {
-                                UM.ActiveTool.setProperty("SingleRegion", false)
-                            }
-                            if (UM.ActiveTool.properties.getValue("ExportMode")) {
-                                UM.ActiveTool.setProperty("ExportMode", false)
-                            }
-                        }
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: autoDetectCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: autoDetectCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: autoDetectCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Auto-Detect All Regions")
-                    font: UM.Theme.getFont("default")
-                    color: autoDetectCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: autoDetectCheckbox.indicator.width + autoDetectCheckbox.spacing
-                }
-            }
-        }
-
-        // Sharp Feature Detection Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: sharpFeaturesCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectSharpFeatures") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("DetectSharpFeatures", checked)
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: sharpFeaturesCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: sharpFeaturesCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: sharpFeaturesCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Detect Sharp Features (auto-detect mode)")
-                    font: UM.Theme.getFont("default")
-                    color: sharpFeaturesCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: sharpFeaturesCheckbox.indicator.width + sharpFeaturesCheckbox.spacing
-                }
-            }
-        }
-
-        // Dangling Vertex Detection Checkbox
-        Row {
-            spacing: Math.round(UM.Theme.getSize("default_margin").width / 2)
-
-            CheckBox {
-                id: danglingVertexCheckbox
-                height: UM.Theme.getSize("setting_control").height
-                checked: UM.ActiveTool ? UM.ActiveTool.properties.getValue("DetectDanglingVertices") : false
-                onToggled: {
-                    if (UM.ActiveTool) {
-                        UM.ActiveTool.setProperty("DetectDanglingVertices", checked)
-                    }
-                }
-
-                indicator: Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 20
-                    x: danglingVertexCheckbox.leftPadding
-                    y: parent.height / 2 - height / 2
-                    radius: 3
-                    border.color: danglingVertexCheckbox.down ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    border.width: 1
-                    color: "transparent"
-
-                    Rectangle {
-                        width: 12
-                        height: 12
-                        x: 4
-                        y: 4
-                        radius: 2
-                        color: UM.Theme.getColor("primary")
-                        visible: danglingVertexCheckbox.checked
-                    }
-                }
-
-                contentItem: Label {
-                    text: catalog.i18nc("@label", "Detect Dangling Vertices (auto-detect mode)")
-                    font: UM.Theme.getFont("default")
-                    color: danglingVertexCheckbox.checked ? UM.Theme.getColor("primary") : UM.Theme.getColor("text")
-                    verticalAlignment: Text.AlignVCenter
-                    leftPadding: danglingVertexCheckbox.indicator.width + danglingVertexCheckbox.spacing
-                }
-            }
-        }
 
         // Export Mode Checkbox
         Row {
